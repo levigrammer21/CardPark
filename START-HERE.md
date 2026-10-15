@@ -1,25 +1,33 @@
-# Cardpark 2.1.1 — updated files
+# Cardpark 2.1.2 — account persistence fix
 
-Extract this ZIP and upload the files inside its single folder directly to your existing repository root, overwriting older copies. Keep files not included. No build step is needed.
+Extract this ZIP and upload the files inside its single folder to your existing repository root, overwriting older copies. Keep files not included. Confirm **v2.1.2** after closing all Cardpark windows and reopening.
 
-**Firebase rules are unchanged.**
+## Firebase rules changed — required
 
-After uploading, open the game online once, fully close all Cardpark windows, and reopen. Confirm **v2.1.1** in the header. Both players should update.
+Open Firebase project `dice-baseball-f6a50` → **Firestore Database → Rules**. Replace the Cardpark rules with the included `firestore.rules` and click **Publish**. Uploading that file to GitHub does not publish it to Firebase. If this project serves unrelated apps, preserve their separate collection rules.
 
-## Bunt is a special
+This adds private per-account backups of completed solo/local game stats under `cardparkUsers/{uid}/archives/{gameId}`. Only that signed-in user can read or write their backups. Existing match/league rules remain unchanged. No billing upgrade, notifications, Cloud Functions, or Storage setup is needed.
 
-Each team gets **one bunt per game**, regardless of the innings setting. Tap **Bunt**, then confirm to roll. Its button shows **USED** afterward. Reloading, ending an inning, or using Clutch cannot restore it. The opponent has a separate allowance. Clutch can reroll a bunt, preserving its approach and its spent allowance.
+## Recover your existing browser data
 
-Bunt odds are unchanged: even total safe at first, odd total out. Existing runners advance one base unless the batter makes the third out; no run scores on that third out. Safe bunts count as singles, qualifying sacrifice bunts as SH.
+1. Publish the rules and upload the updated files.
+2. Open the updated game once in the Google/Chrome browser where your profiles and stats are still present. Sign into your existing account if necessary. Leave it open online so its account sync completes. Account → **Sync account** can retry; a sync error is shown there if a request fails.
+3. Open the installed app and sign into **the same account** if its separate browser storage has never held that sign-in. The lineup, photos, and completed stats now load from Firebase automatically. Refreshing the app restores its saved session at startup.
 
-Previously saved play records remain replayable, including earlier versions' multiple-bunt records. Old records without the new usage flag begin tracking the allowance from their saved state onward.
+Data previously stored only in a browser must be uploaded from that browser once. The app cannot directly read a different browser's private local storage. Do not clear either one's site data during migration. Do not create a new account to recover the old account's records.
 
-## Controls stay on screen
+## What changed
 
-On phones and tablets up to 1000 CSS pixels wide, the compact play bar stays at the bottom of the viewport. Roll, Bunt, Clutch, speed, odds, box score, replays, and sound are together. Inning confirmation and catch-up/replay controls appear in that same bar when needed. The large animated dice reveal still appears during rolls.
+Firebase starts on app launch and restores authentication before offering sign-in or editing the lineup. Authentication uses durable IndexedDB persistence, with a localStorage fallback. The header shows “Restoring…” while checking, rather than presenting a false signed-out state.
 
-The stadium keeps its previous width and aspect ratio. No field artwork or card animation geometry changed. Extra page space below the content lets you bring the bottom of the field above the pinned controls when needed. Match-heading duplication was removed on smaller screens.
+Saved lineup names, numbers, icons, and uploaded photos load automatically from the account. Editing a lineup saves it to the account for solo/local games too. Failed saves remain queued locally and retry on account sync/reconnection. A default install cannot overwrite a customized cloud lineup. A pre-existing device lineup is also retained as a recovery copy; Account offers **Recover previous lineup** if it differs from the restored one.
 
-## Checks
+**My stats** and the Clubhouse Stats tab now show the account career: online games plus backed-up completed solo/local games. Online games remain in their original Firestore records. Existing browser-only final games are migrated by ID without duplicate counting. Confirmed final games only; solo/local records use the away team you control. New signed-in offline stats retain their history rather than trimming it to the old 35-game limit.
 
-Bunt limits were checked for both teams, across innings, through saves/replays, after clutch reversals, and through mocked online transactions/retries. The full engine, leagues, recaps, app event queue, and UI control tests passed. The field asset is byte-for-byte unchanged. Actual browser/device layout and two-account Firebase tests were unavailable in this environment.
+Guest play still works locally. Unfinished offline games remain on the device where they were started. Keeping a login locally is necessary for authentication; your account profiles and synced stats are stored in Firestore.
+
+## Verification
+
+Checks cover automatic startup auth restoration, durable auth initialization, profile/photo restoration into empty app storage, browser-only migration, combined stats, duplicate-safe backups, queued failed-save recovery, account isolation, recovery from an older default-profile overwrite, and refresh reads using a Firebase mock. The existing live event, bunt, gameplay, and league checks pass.
+
+Real installed-app/browser sessions and a Firestore rules emulator were not available in this environment. The included rules must be published before the new archive backup requests can succeed.

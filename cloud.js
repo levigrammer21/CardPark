@@ -13,6 +13,7 @@ export async function connect(){
   const base='https://www.gstatic.com/firebasejs/12.3.0/';
   const [app,A,F]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
   const instance=app.initializeApp(firebaseConfig);auth=A.getAuth(instance);db=F.getFirestore(instance);
+  try{await A.setPersistence(auth,A.indexedDBLocalPersistence);}catch{await A.setPersistence(auth,A.browserLocalPersistence);}
   await new Promise((resolve,reject)=>{let first=true;A.onAuthStateChanged(auth,u=>{user=u;if(first){first=false;resolve();}callbacks.forEach(fn=>fn(u));},reject);});
   sdk={A,F,auth,db};return sdk;
  })().catch(e=>{pending=null;throw e;});return pending;
@@ -22,7 +23,10 @@ export async function google(){const {A}=await connect();return A.signInWithPopu
 export async function logout(){const {A}=await connect();return A.signOut(auth);}
 export async function reset(email){const {A}=await connect();return A.sendPasswordResetEmail(auth,email);}
 export async function loadTeam(){const {F}=await connect();if(!user)return null;const s=await F.getDoc(F.doc(db,'cardparkUsers',user.uid));return s.exists()?s.data().team:null;}
-export async function saveTeam(team){const {F}=await connect();if(!user)throw Error('Sign in first.');await F.setDoc(F.doc(db,'cardparkUsers',user.uid),{team,updatedAt:F.serverTimestamp()});}
+export async function saveTeam(team,expectedUid=user?.uid){const {F}=await connect(),uid=requireUser();if(uid!==expectedUid)throw Error('Your account changed. Try again.');await F.setDoc(F.doc(db,'cardparkUsers',uid),{team,updatedAt:F.serverTimestamp()});}
+export async function loadArchives(){const {F}=await connect(),uid=requireUser(),snapshot=await F.getDocs(F.collection(db,'cardparkUsers',uid,'archives'));return snapshot.docs.flatMap(d=>{try{const m=JSON.parse(d.data().dataJSON);return m.id===d.id&&m.state?.over&&m.finalized&&!m.pending&&m.teams?.length===2?[m]:[];}catch{return [];}});}
+export async function saveArchive(record,expectedUid=user?.uid){const {F}=await connect(),uid=requireUser();if(uid!==expectedUid)throw Error('Your account changed. Try again.');if(!record?.state?.over||!record.finalized||record.pending)throw Error('Only final games can sync.');const m={id:String(record.id),state:clone(record.state),teams:clone(record.teams),finalized:true,pending:false,mode:record.mode||'solo'};m.teams.forEach(t=>t.players.forEach(p=>p.photo=''));const dataJSON=JSON.stringify(m);if(!/^[A-Za-z0-9_-]{1,128}$/.test(m.id)||dataJSON.length>150000)throw Error('This saved game cannot sync.');await F.setDoc(F.doc(db,'cardparkUsers',uid,'archives',m.id),{id:m.id,dataJSON,updatedAt:F.serverTimestamp()});}
+export async function listMatches(){const {F}=await connect(),uid=requireUser(),s=await F.getDocs(F.query(F.collection(db,'cardparkMatches'),F.where('players','array-contains',uid)));return s.docs.map(d=>decodeMatch({...d.data(),code:d.id}));}
 function requireUser(){if(!user)throw Error('Sign in to play online.');return user.uid;}
 function randomCode(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';const b=crypto.getRandomValues(new Uint8Array(8));return Array.from(b,x=>chars[x%32]).join('');}
 

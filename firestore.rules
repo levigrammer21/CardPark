@@ -10,6 +10,15 @@ service cloud.firestore {
    allow read, delete: if signed() && request.auth.uid == uid;
    allow create, update: if signed() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['team','updatedAt']) && team(request.resource.data.team) && request.resource.data.updatedAt == request.time;
   }
+  match /cardparkUsers/{uid}/archives/{gameId} {
+   allow read: if signed() && request.auth.uid == uid;
+   allow create, update: if signed() && request.auth.uid == uid
+    && request.resource.data.keys().hasOnly(['id','dataJSON','updatedAt'])
+    && request.resource.data.id == gameId && gameId.size() <= 128
+    && request.resource.data.dataJSON is string && request.resource.data.dataJSON.size() <= 150000
+    && request.resource.data.updatedAt == request.time;
+   allow delete: if false;
+  }
   match /cardparkLocks/{code} {
    allow read: if signed() && resource.data.owner == request.auth.uid;
    allow create: if signed() && request.resource.data.keys().hasOnly(['owner','hash']) && request.resource.data.owner == request.auth.uid && request.resource.data.hash is string && request.resource.data.hash.size() <= 64 && getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data.owner == request.auth.uid;
