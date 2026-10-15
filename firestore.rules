@@ -63,6 +63,37 @@ service cloud.firestore {
       || (request.resource.data.status == 'complete' && request.resource.data.turnUid == ''));
    }
    allow delete: if false;
+   match /presence/{uid} {
+    function parent() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    allow read: if participant(parent());
+    allow create, update: if participant(parent()) && request.auth.uid == uid
+     && request.resource.data.keys().hasOnly(['active','at'])
+     && request.resource.data.active is bool && request.resource.data.at == request.time;
+    allow delete: if false;
+   }
+   match /live/current {
+    function parent() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    function validLive() {
+     return participant(parent()) && parent().status == 'active'
+      && parent().turnUid == request.auth.uid
+      && request.resource.data.keys().hasOnly(['seq','by','startJSON','rolls','updatedAt'])
+      && request.resource.data.seq == parent().seq
+      && request.resource.data.by == request.auth.uid
+      && request.resource.data.startJSON == parent().stateJSON
+      && request.resource.data.rolls is list
+      && request.resource.data.rolls.size() > 0 && request.resource.data.rolls.size() <= 2000
+      && request.resource.data.updatedAt == request.time;
+    }
+    allow read: if participant(parent());
+    allow create: if validLive();
+    allow update: if validLive()
+     && (resource.data.seq < request.resource.data.seq
+      || (resource.data.seq == request.resource.data.seq
+       && resource.data.by == request.resource.data.by
+       && resource.data.startJSON == request.resource.data.startJSON
+       && request.resource.data.rolls.size() > resource.data.rolls.size()));
+    allow delete: if false;
+   }
    match /turns/{turnId} {
     function parentBefore() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
     function parentAfter() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }

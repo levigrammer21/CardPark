@@ -50,7 +50,7 @@ export async function watchMatch(code,next,error){const {F}=await connect();requ
 export async function submitTurn(code,seq,start,rolls){
  const {F}=await connect();const uid=requireUser();
  return F.runTransaction(db,async tx=>{
-  const ref=F.doc(db,'cardparkMatches',code),snap=await tx.get(ref);if(!snap.exists())throw Error('Game not found.');const m=decodeMatch(snap.data());
+  const ref=F.doc(db,'cardparkMatches',code);const [snap,liveSnap]=await Promise.all([tx.get(ref),tx.get(F.doc(db,'cardparkMatches',code,'live','current'))]);if(!snap.exists())throw Error('Game not found.');const m=decodeMatch(snap.data());
   // An uncertain network response can be retried without submitting twice.
   if(m.seq===seq+1&&m.lastTurn?.by===uid&&JSON.stringify(m.lastTurn.rolls)===JSON.stringify(rolls))return m.state;
   if(m.seq!==seq)throw Error('This turn changed on another device. Return to your games and reopen it.');
@@ -60,6 +60,8 @@ export async function submitTurn(code,seq,start,rolls){
    if(!sameState(m.state,start))throw Error('The saved turn no longer matches this game. Reopen it.');
   }
   if(!rolls.length||rolls.length>2000)throw Error('Invalid turn.');
+  const live=liveSnap.exists()?liveSnap.data():null;
+  if(live?.seq===seq&&(live.rolls.length>rolls.length||live.rolls.some((r,i)=>!sameState(r,rolls[i]))))throw Error('Another device changed this turn. Reopen the match to recover the published rolls.');
   let s=clone(start),end=false;
   for(const r of rolls){if(end)throw Error('Turn contains extra rolls.');const result=applyRoll(s,r.dice);s=result.state;end=result.event.endTurn;}
   if(!end)throw Error('Finish the half-inning before sending your turn.');
@@ -71,3 +73,29 @@ export async function submitTurn(code,seq,start,rolls){
 function sameState(a,b){if(a===b)return true;if(a===null||b===null||typeof a!=='object'||typeof b!=='object')return false;const ak=Object.keys(a).sort(),bk=Object.keys(b).sort();return ak.length===bk.length&&ak.every((k,i)=>k===bk[i]&&sameState(a[k],b[k]));}
 export async function history(code){const {F}=await connect();requireUser();const s=await F.getDocs(F.collection(db,'cardparkMatches',code,'turns'));return s.docs.map(x=>decodeTurn(x.data())).sort((a,b)=>b.index-a.index);}
 export function friendly(e){const c=e?.code||'';if(c.includes('permission-denied'))return 'Firestore blocked this request. Publish the included firestore.rules in Firebase → Firestore Database → Rules.';if(c.includes('unauthorized-domain'))return 'Add your GitHub Pages hostname to Firebase → Authentication → Settings → Authorized domains.';if(c.includes('invalid-credential')||c.includes('wrong-password')||c.includes('user-not-found'))return 'Email or password was not recognized.';if(c.includes('email-already-in-use'))return 'That email already has an account. Choose Sign in.';if(c.includes('weak-password'))return 'Use a password with at least six characters.';if(c.includes('invalid-email'))return 'Enter a valid email address.';if(c.includes('popup-blocked'))return 'Your browser blocked Google sign-in. Allow popups for this site or use email and password.';if(c.includes('popup-closed'))return 'Google sign-in was closed. Try again when ready.';if(c.includes('operation-not-allowed'))return 'Enable this sign-in provider in Firebase Authentication.';if(c.includes('network')||/fetch|dynamically imported/i.test(e?.message||''))return 'Cannot connect right now. Check your connection and try again. Offline games still work.';return e?.message||'Something went wrong. Please try again.';}
+
+// The complete turn remains the authoritative save; this small stream previews each roll live.
+export async function publishLive(code,seq,start,rolls){
+ const {F}=await connect();const uid=requireUser();
+ const ref=F.doc(db,'cardparkMatches',code),live=F.doc(db,'cardparkMatches',code,'live','current');
+ const startJSON=JSON.stringify(start);
+ await F.runTransaction(db,async tx=>{
+  const [parent,previous]=await Promise.all([tx.get(ref),tx.get(live)]);
+  if(!parent.exists())throw Error('Game not found.');const m=parent.data();
+  if(m.seq!==seq||m.status!=='active')return; // Completed-turn commits can overtake a preview safely.
+  if(m.turnUid!==uid||!m.players.includes(uid))throw Error('It is not your turn.');
+  if(m.stateJSON!==startJSON)throw Error('Live turn no longer matches the game.');
+  const old=previous.exists()?previous.data():null;
+  if(old?.seq===seq){
+   const common=Math.min(old.rolls.length,rolls.length);
+   for(let i=0;i<common;i++)if(JSON.stringify(old.rolls[i].dice)!==JSON.stringify(rolls[i].dice))throw Error('Another device changed this live turn.');
+   if(old.rolls.length>=rolls.length)return;
+  }
+  let state=clone(start),end=false;
+  for(const r of rolls){if(end)throw Error('Live turn contains extra rolls.');const result=applyRoll(state,r.dice);state=result.state;end=result.event.endTurn;}
+  tx.set(live,{seq,by:uid,startJSON,rolls:clone(rolls),updatedAt:F.serverTimestamp()});
+ });
+}
+export async function watchLive(code,next,error){const {F}=await connect();requireUser();return F.onSnapshot(F.doc(db,'cardparkMatches',code,'live','current'),s=>{if(s.exists()){const t=s.data();next({...t,start:JSON.parse(t.startJSON)});}else next(null);},error);}
+export async function presence(code,active){const {F}=await connect();const uid=requireUser();return F.setDoc(F.doc(db,'cardparkMatches',code,'presence',uid),{active,at:F.serverTimestamp()});}
+export async function watchPresence(code,next,error){const {F}=await connect();requireUser();return F.onSnapshot(F.collection(db,'cardparkMatches',code,'presence'),s=>next(Object.fromEntries(s.docs.map(d=>[d.id,d.data()]))),error);}

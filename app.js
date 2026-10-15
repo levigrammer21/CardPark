@@ -1,3 +1,5 @@
+import {TurnFeed} from './live.js';
+import {unlockAudio,configureAudio,parkAudio,soundFX} from './audio.js';
 import {RULES,createState,clone,batter,rollDice,applyRoll,replay} from './engine.js';
 import {esc,cardHTML,dieHTML,paintField,animatePlay,animateDice,setSpeed,setSound,clickSound} from './field.js';
 import * as Cloud from './cloud.js';
@@ -13,14 +15,18 @@ let teams=read('teams',clone(defaultTeams));
 function validTeam(t){return t&&typeof t.name==='string'&&/^#[a-f0-9]{6}$/i.test(t.color)&&Array.isArray(t.players)&&t.players.length===4&&t.players.every(p=>typeof p.name==='string'&&typeof p.photo==='string'&&p.photo.length<=40000);}
 if(!Array.isArray(teams)||teams.length!==2||!teams.every(validTeam))teams=clone(defaultTeams);
 let view='home',generation=0,unsubList=null,unsubMatch=null,current=null,session=null,busy=false,replaying=false,speed=read('speed',1),sound=read('sound',true),accountReady=false,authMode='signin',onlineList=[],toastTimer,autoTimer,replayStop=false,replayId=0;
+let unsubLive=null,unsubPresence=null,heartbeatTimer=null,presenceTimer=null,presenceData={},liveFeed=null,livePlaying=false,liveEpoch=0,latestLive=null,liveReady=false,liveError=false,liveStarting=false;
+let soundVolume=read('volume',.8),crowdSound=read('crowd',true);configureAudio({volume:soundVolume,crowd:crowdSound});
+document.addEventListener('pointerdown',unlockAudio,{capture:true});
+document.addEventListener('keydown',unlockAudio,{capture:true});
 if(![1,2,4].includes(speed))speed=1;setSpeed(speed);setSound(sound);
-$('#sound').textContent=sound?'♪':'♩';$('#sound').setAttribute('aria-pressed',String(sound));
+$('#sound').textContent=sound?'🔊':'🔇';$('#sound').setAttribute('aria-pressed',String(sound));
 function toast(msg){$('#toast').textContent=msg;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4200);}
 function errorText(e){return Cloud.friendly(e);}
 function closeModal(){modal.close();}
 function showModal(title,html){$('#modalBody').innerHTML=`<div class="modal-head"><h2>${title}</h2><button class="close" data-close aria-label="Close dialog">×</button></div>${html}`;if(!modal.open)modal.showModal();modal.querySelector('[data-close]').onclick=closeModal;}
 modal.addEventListener('click',e=>{if(e.target===modal){const r=modal.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}});
-function enter(v){generation++;clearTimeout(autoTimer);replayStop=true;replayId++;unsubList?.();unsubList=null;unsubMatch?.();unsubMatch=null;view=v;busy=false;replaying=false;window.scrollTo({top:0,behavior:'instant'});return generation;}
+function enter(v){stopLive();parkAudio(v==='game');generation++;clearTimeout(autoTimer);replayStop=true;replayId++;unsubList?.();unsubList=null;unsubMatch?.();unsubMatch=null;view=v;busy=false;replaying=false;window.scrollTo({top:0,behavior:'instant'});return generation;}
 function localKey(){return 'offline';}
 function draftKey(m=current){return `draft.${Cloud.user?.uid}.${m?.code}`;}
 function saveSession(){if(!session)return;if(session.kind==='offline'){write(localKey(),session);}else{write(draftKey(),{seq:session.seq,start:session.start,rolls:session.rolls,state:session.state,log:session.log,pending:session.pending});}}
@@ -29,8 +35,8 @@ function accountLabel(){const u=Cloud.user;$('#account').textContent=u?(u.displa
 Cloud.onUser(u=>{accountReady=true;accountLabel();if(!u&&view==='lobby')renderLobby();});
 $('#brand').onclick=()=>{if(busy&&!replaying){toast('Finishing this play…');return;}home();};
 $('#help').onclick=rules;
-$('#sound').onclick=()=>{sound=!sound;write('sound',sound);setSound(sound);$('#sound').textContent=sound?'♪':'♩';$('#sound').setAttribute('aria-pressed',String(sound));clickSound();};
-$('#account').onclick=()=>Cloud.user?accountDialog():authDialog();
+$('#sound').onclick=soundSettings;
+
 function home(){
  enter('home');session=null;current=null;
  const saved=read(localKey(),null);
@@ -85,7 +91,7 @@ function setup(mode){
  };
 }
 function rules(){
- showModal('Two dice. Play ball.',`<p class="rules-copy">Tap to roll both dice. Their order does not matter. Three outs ends your turn. Choose 3, 6, or 9 innings; tied games continue into extra innings.</p><table class="rules-grid"><tbody>${Object.entries(RULES).map(([k,v])=>`<tr><td>${k}</td><td>${v[1]}</td></tr>`).join('')}</tbody></table><div class="rules-copy"><p><strong>Hits:</strong> all runners advance the number of bases hit. Home runs score everyone.</p><p><strong>Walk:</strong> the batter takes first; only forced runners advance.</p><p><strong>Ordinary outs:</strong> runners hold. A strikeout is one out, with one roll resolving the entire at-bat.</p><p><strong>Double play:</strong> the batter and the runner closest to home are out. Empty bases means one out. With two outs, only the batter is retired.</p><p><strong>Sacrifice fly:</strong> the batter is out and every runner advances one base, unless that is the third out.</p><p><strong>Four-card lineup:</strong> players currently on base are skipped when choosing the next batter. Cards have no special abilities.</p><p><strong>Winning:</strong> the home team can win on a walk-off. If already ahead after the final top half, they do not need to bat. There is no mercy rule or extra-inning ghost runner.</p><p><strong>Online:</strong> play a complete half-inning. Every roll saves on this device as you go. The completed turn sends automatically; your opponent can replay it or skip ahead. Leave mid-turn and resume on this same device. No notifications are sent.</p></div>`);
+ showModal('Two dice. Play ball.',`<p class="rules-copy">Tap to roll both dice. Their order does not matter. Three outs ends your turn. Choose 3, 6, or 9 innings; tied games continue into extra innings.</p><table class="rules-grid"><tbody>${Object.entries(RULES).map(([k,v])=>`<tr><td>${k}</td><td>${v[1]}</td></tr>`).join('')}</tbody></table><div class="rules-copy"><p><strong>Hits:</strong> all runners advance the number of bases hit. Home runs score everyone.</p><p><strong>Walk:</strong> the batter takes first; only forced runners advance.</p><p><strong>Ordinary outs:</strong> runners hold. A strikeout is one out, with one roll resolving the entire at-bat.</p><p><strong>Double play:</strong> the batter and the runner closest to home are out. Empty bases means one out. With two outs, only the batter is retired.</p><p><strong>Sacrifice fly:</strong> the batter is out and every runner advances one base, unless that is the third out.</p><p><strong>Four-card lineup:</strong> players currently on base are skipped when choosing the next batter. Cards have no special abilities.</p><p><strong>Winning:</strong> the home team can win on a walk-off. If already ahead after the final top half, they do not need to bat. There is no mercy rule or extra-inning ghost runner.</p><p><strong>Online:</strong> play a complete half-inning. Every roll saves on this device as you go. The completed turn sends automatically; your opponent can replay it or skip ahead. Leave mid-turn and resume on this same device. When you both have this game open, each roll streams live automatically. Otherwise, return later and replay the completed turn. No notifications are sent.</p></div>`);
 }
 function authDialog(){
  showModal('Welcome to the club.',`<p class="note">Sign in for private games with friends. Offline games never need an account.</p><button class="btn outline wide" id="googleLogin">Continue with Google</button><div class="divider">or use your email</div><div class="tabs"><button id="tabSignin" class="${authMode==='signin'?'active':''}">Sign in</button><button id="tabSignup" class="${authMode==='signup'?'active':''}">Create account</button></div><form id="authForm"><div class="form-group"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div><div class="form-group"><label for="password">Password</label><input id="password" type="password" minlength="6" autocomplete="${authMode==='signup'?'new-password':'current-password'}" required></div><p class="error statusline" id="authError" role="alert"></p><button class="btn wide" id="authSubmit">${authMode==='signup'?'Create account':'Sign in'}</button></form><button class="back" id="forgot" style="margin:17px 0 0">Forgot password?</button>`);
@@ -108,12 +114,14 @@ function renderLobby(message='',error=false){
 function joinDialog(){showModal('Got an invite?',`<p class="note">You’ll join as the home team using your current lineup: <strong>${teamLabel(teams[0])}</strong>.</p><form id="joinForm"><label for="inviteCode">Eight-character invite code</label><input id="inviteCode" autocapitalize="characters" autocomplete="off" maxlength="12" placeholder="ABCD 2345" required style="letter-spacing:4px;font-size:23px;text-transform:uppercase"><p class="error" id="joinError" role="alert"></p><button class="btn wide" id="joinSubmit">Join ballgame</button></form><button class="back" id="editJoinTeam" style="margin:18px 0 0">Customize my lineup first →</button>`);const savedInvite=read('invite',null);if(savedInvite)$('#inviteCode').value=savedInvite;$('#editJoinTeam').onclick=()=>{closeModal();setup('team');};$('#joinForm').onsubmit=async e=>{e.preventDefault();const btn=$('#joinSubmit');btn.disabled=true;try{await Cloud.saveTeam(teams[0]);const code=await Cloud.joinMatch($('#inviteCode').value,teams[0]);closeModal();openMatch(code);}catch(err){$('#joinError').textContent=errorText(err);btn.disabled=false;}};}
 async function openMatch(code){
  const g=enter('game');session=null;current=null;main.innerHTML='<div class="empty">Opening the ballpark…</div>';
- try{unsubMatch=await Cloud.watchMatch(code,m=>{if(g!==generation)return;current=m;if(m.status==='waiting'){waitingRoom(m);return;}
+ try{unsubMatch=await Cloud.watchMatch(code,m=>{if(g!==generation)return;const previousSeq=current?.seq;current=m;if(previousSeq!==undefined&&previousSeq!==m.seq&&m.turnUid===Cloud.user?.uid)soundFX('yourturn');startLive(code,g);if(m.status==='waiting'){waitingRoom(m);return;}
   if(!session||session.code!==code||session.seq!==m.seq){
    const draft=read(draftKey(m),null);let useDraft=false;
    if(draft&&draft.seq===m.seq&&m.turnUid===Cloud.user?.uid){try{const state=replay(draft.start,draft.rolls);useDraft=equivalent(state,draft.state)&&equivalent(draft.start,m.state);}catch{}}
    session={kind:'online',code,seq:m.seq,teams:m.teams,state:clone(useDraft?draft.state:m.state),start:clone(m.state),rolls:useDraft?draft.rolls:[],log:useDraft?draft.log||[]:[],pending:useDraft?draft.pending:false,between:false};
    if(!useDraft)remove(draftKey(m));
+   if(latestLive?.seq===m.seq)receiveLive(latestLive);
+   if(m.lastTurn?.by!==Cloud.user?.uid&&m.lastTurn&&(previousSeq===m.lastTurn.index||liveFeed?.seq===m.lastTurn.index))receiveLive({...m.lastTurn,seq:m.lastTurn.index,committed:true});
    if(!busy&&!replaying)renderGame();
   } else if(!busy&&!replaying)renderGame();
  },e=>{if(g===generation){main.innerHTML=`<div class="setup"><button class="back" id="matchErrorBack">← Clubhouse</button><h2>Couldn’t open the ballpark.</h2><p class="error">${esc(errorText(e))}</p></div>`;$('#matchErrorBack').onclick=lobby;}});
@@ -127,20 +135,21 @@ function lineTable(s,ts){const count=Math.max(s.innings,s.inning);return `<div c
 function isMine(){return session?.kind==='offline'||(current?.status==='active'&&current.turnUid===Cloud.user?.uid);}
 function availableReplay(){return session?.kind==='offline'?session.history?.at(-1):current?.lastTurn;}
 function renderGame(displayState=null){
- if(!session)return;const s=displayState||session.state,ts=session.teams,online=session.kind==='online',mine=isMine(),own=online?current.players.indexOf(Cloud.user?.uid):0,nextB=s.over?null:batter(s),cpu=!online&&session.mode==='solo'&&s.half===1;
- const last=availableReplay(),unseen=online&&last&&last.by!==Cloud.user?.uid&&read(`seen.${session.code}`,0)<current.seq;
- main.innerHTML=`<div class="game-header row"><div><button class="back" id="gameBack" style="margin-bottom:10px">← ${online?'Clubhouse':'Home'}</button><h2>${replaying?'The last word? Watch it.':s.over?'That’s a ballgame.':'Let’s play some ball.'}</h2><span class="eyebrow">${online?'FRIENDS, ANY TIME':session.mode==='solo'?'SOLO BALLGAME':'PASS & PLAY'} / ${s.innings} INNINGS${s.inning>s.innings?' / EXTRAS':''}</span></div><button id="speed" class="speed" aria-label="Change animation speed">${speed}× speed</button></div>
+ if(!session)return;const live=!replaying&&activeLive();const s=displayState||(live?liveFeed.state:null)||session.state,ts=session.teams,online=session.kind==='online',mine=isMine(),own=online?current.players.indexOf(Cloud.user?.uid):0,nextB=s.over?null:batter(s),cpu=!online&&session.mode==='solo'&&s.half===1;
+ const last=availableReplay(),unseen=online&&last&&last.by!==Cloud.user?.uid&&read(`seen.${session.code}`,0)<current.seq&&!live;
+ main.innerHTML=`<div class="game-header row"><div><button class="back" id="gameBack" style="margin-bottom:10px">← ${online?'Clubhouse':'Home'}</button><h2>${replaying?'The last word? Watch it.':s.over?'That’s a ballgame.':'Let’s play some ball.'}</h2><span class="eyebrow">${online?'FRIENDS, ANY TIME':session.mode==='solo'?'SOLO BALLGAME':'PASS & PLAY'} / ${s.innings} INNINGS${s.inning>s.innings?' / EXTRAS':''}</span></div><div class="game-tools">${online?'<span id="onlinePresence" class="live-status"></span>':''}<button id="speed" class="speed" aria-label="Change animation speed">${speed}× speed</button></div></div>
  ${s.over&&!replaying?`<div class="final-banner"><div class="eyebrow">FINAL SCORE · ${s.runs.join(' – ')}</div><h2>${teamLabel(ts[s.winner])} win!</h2><button class="btn" id="boxScore">View box score</button> <button class="btn secondary" id="rematch">${online?'New ballgame':'Play again'}</button></div>`:''}
- ${replaying?`<div class="replaybar"><strong id="replayStatus">Playing the turn…</strong><button class="btn secondary" id="stopReplay">Skip to game →</button></div>`:unseen?`<div class="replaybar"><strong>Your opponent played their turn.</strong><div class="tabs"><button class="active" id="watchTurn">Watch turn</button><button id="skipTurn">Skip to mine →</button></div></div>`:online&&!s.over&&!mine?`<div class="waiting"><strong>${teamLabel(ts[1-own])} are up.</strong> Your turn will appear here after they finish. You can leave and come back.</div>`:''}
+ ${replaying?`<div class="replaybar"><strong id="replayStatus">Playing the turn…</strong><button class="btn secondary" id="stopReplay">Skip to game →</button></div>`:live?`<div class="replaybar livebar"><strong><span class="live-dot"></span>${livePlaying?'Watching live':'Live field'} · ${teamLabel(ts[liveFeed.start.half])}</strong><button class="btn secondary" id="skipLive">Catch up →</button></div>`:unseen?`<div class="replaybar"><strong>Your opponent played their turn.</strong><div class="tabs"><button class="active" id="watchTurn">Watch turn</button><button id="skipTurn">Skip to mine →</button></div></div>`:online&&!s.over&&!mine?`<div class="waiting"><strong>${teamLabel(ts[1-own])} are up.</strong> ${opponentHere()?'They’re here. Their next roll will play on your field.':'You can leave and come back, or stay to watch their rolls live.'}</div>`:''}
  ${session.pending&&!replaying?`<div class="waiting"><strong>Your half-inning is finished.</strong> ${online?'Send this saved turn to your opponent. Your rolls stay on this device until it sends.':'The side is retired.'}<button id="sendTurn" class="btn" style="margin:10px 0 0;display:block">${online?'Send turn / retry':'Continue'}</button><p class="error" id="sendError" role="alert"></p></div>`:''}
  <div class="game-layout"><div class="game-stage"><section class="stadium"><div class="scoreboard"><div class="team-score"><div><div class="teamname">${teamLabel(ts[0])}</div><small>AWAY${!s.over&&s.half===0?' · AT BAT':''}</small></div><span class="score">${s.runs[0]}</span></div><div class="inning">${formatInning(s)}<div class="outdots" aria-label="${s.outs} outs">${[0,1,2].map(i=>`<i class="${i<s.outs?'on':''}"></i>`).join('')}</div></div><div class="team-score home"><div><div class="teamname">${teamLabel(ts[1])}</div><small>HOME${!s.over&&s.half===1?' · AT BAT':''}</small></div><span class="score">${s.runs[1]}</span></div></div><div class="field" id="field" aria-label="Baseball field"></div><div class="field-bottom"><span>${s.over?'<strong>Thanks for playing.</strong>':`AT BAT <strong>${esc(ts[s.half].players[nextB].name)}</strong> #${esc(ts[s.half].players[nextB].number)}`}</span><span>${s.over?'FINAL':`${s.outs} OUT${s.outs!==1?'S':''} · ${s.bases.filter(x=>x!==null).length} ON BASE`}</span></div></section>
- <div class="control-panel"><div><div class="dice-pair" id="dice">${(session.lastDice||[1,1]).map(dieHTML).join('')}</div></div><div><button class="roll-btn" id="roll" ${s.over||busy||replaying||session.pending||session.between||!mine||cpu||unseen?'disabled':''}>${replaying?'Replay':s.over?'Final':session.pending?'Turn finished':session.between?'Side retired':!mine?'Their turn':cpu?'Park crew batting…':'Roll the dice ↗'}</button><div class="control-caption">${online?mine?'Your turn · saved as you roll':'Turn-based · no need to stay':cpu?'Same dice. Same odds.':'Two dice. One at-bat.'}</div></div></div>
+ <div class="control-panel"><div><div class="dice-pair" id="dice">${(session.lastDice||[1,1]).map(dieHTML).join('')}</div></div><div><button class="roll-btn" id="roll" ${s.over||busy||replaying||session.pending||session.between||!mine||cpu||unseen||live||(online&&!liveReady)?'disabled':''}>${replaying?'Replay':s.over?'Final':session.pending?'Turn finished':session.between?'Side retired':!mine?'Their turn':cpu?'Park crew batting…':'Roll the dice ↗'}</button><div class="control-caption">${online?livePlaying?'Watching their roll live':mine?'Your turn · saved as you roll':opponentHere()?'Live rolls · both in the park':'Live when they return':cpu?'Same dice. Same odds.':'Two dice. One at-bat.'}</div></div></div>
  ${session.between&&!s.over&&!replaying?`<div class="waiting"><strong>${teamLabel(ts[s.half])} are up next.</strong>${session.mode==='local'?' Pass the device, then start the half-inning.':''}<button class="btn wide" id="nextHalf" style="margin-top:10px">${session.mode==='solo'&&s.half===1?'Watch the park crew':'Start half-inning →'}</button></div>`:''}
  <section class="panel" style="margin-top:16px"><div class="row"><h3 style="margin:0">${s.over?'The lineup':teamLabel(ts[s.half])}</h3><span class="eyebrow">${s.over?'EVERY CARD COUNTS':'STARTING FOUR'}</span></div><div class="roster-list">${ts[s.half].players.map((p,i)=>`<div class="roster-card ${!s.over&&i===nextB?'active':''}">${cardHTML(p,ts[s.half])}<small>${s.bases.includes(i)?'ON BASE':!s.over&&i===nextB?'AT BAT':`${s.stats[s.half][i].h} H · ${s.stats[s.half][i].r} R`}</small></div>`).join('')}</div></section></div>
- <aside class="sidebar"><section class="panel"><h3>The linescore</h3>${lineTable(s,ts)}<p class="fineprint" style="margin:12px 0 0">${s.inning>s.innings?'Extra innings. Somebody’s got to win.':'Three outs. Switch sides. Keep it rolling.'}</p></section><section class="panel"><h3>${online?'Your ballgame':'The small print'}</h3><p class="note">${online?`You are the <strong>${own===0?'away':'home'}</strong> team.<br>Invite <strong>${esc(session.code)}</strong><br><span class="sync-dot"></span>${session.rolls.length&&!session.pending?'Turn in progress · saved on this device':session.pending?'Turn saved locally · ready to send':'Completed turns saved online'}`:'Everything saves on this device.<br>Same odds for every player.<br>No steals. No extra decisions.'}</p><div class="buttonrow" style="margin-top:10px">${last?'<button class="btn secondary" id="lastReplay">Replay turn</button>':''}<button class="btn outline" id="history">Game history</button></div><p class="sync-info">${online?'A mid-turn draft resumes on this device. Completed turns sync across devices.':'You can leave and resume from the home screen.'}</p></section><section class="panel logpanel"><div class="row"><h3 style="margin-bottom:8px">From the dugout</h3><span class="pill">PLAY LOG</span></div><div class="playlog">${logHTML(session.log,ts)}</div></section></aside></div>`;
- paintField($('#field'),s,ts);$('#gameBack').onclick=()=>{if(busy&&!replaying){toast('Finishing this play…');return;}online?lobby():home();};
+ <aside class="sidebar"><section class="panel"><h3>The linescore</h3>${lineTable(s,ts)}<p class="fineprint" style="margin:12px 0 0">${s.inning>s.innings?'Extra innings. Somebody’s got to win.':'Three outs. Switch sides. Keep it rolling.'}</p></section><section class="panel"><h3>${online?'Your ballgame':'The small print'}</h3><p class="note">${online?`You are the <strong>${own===0?'away':'home'}</strong> team.<br>Invite <strong>${esc(session.code)}</strong><br><span class="sync-dot"></span>${session.rolls.length&&!session.pending?'Turn in progress · saved on this device':session.pending?'Turn saved locally · ready to send':'Completed turns saved online'}`:'Everything saves on this device.<br>Same odds for every player.<br>No steals. No extra decisions.'}</p><div class="buttonrow" style="margin-top:10px">${last?'<button class="btn secondary" id="lastReplay">Replay turn</button>':''}<button class="btn outline" id="history">Game history</button></div><p class="sync-info">${online?'A mid-turn draft resumes on this device. Completed turns sync across devices.':'You can leave and resume from the home screen.'}</p></section><section class="panel logpanel"><div class="row"><h3 style="margin-bottom:8px">From the dugout</h3><span class="pill">PLAY LOG</span></div><div class="playlog">${logHTML(live?liveFeed.log:session.log,ts)}</div></section></aside></div>`;
+ paintField($('#field'),s,ts);$('#gameBack').onclick=()=>{if(busy&&!replaying&&!livePlaying){toast('Finishing this play…');return;}online?lobby():home();};
  $('#speed').onclick=()=>{speed=speed===1?2:speed===2?4:1;write('speed',speed);setSpeed(speed);$('#speed').textContent=speed+'× speed';};
- $('#roll').onclick=()=>takeRoll();$('#watchTurn')?.addEventListener('click',()=>playReplay(last));$('#lastReplay')?.addEventListener('click',()=>playReplay(last));$('#skipTurn')?.addEventListener('click',()=>{write(`seen.${session.code}`,current.seq);renderGame();});$('#stopReplay')?.addEventListener('click',()=>{replayStop=true;replayId++;replaying=false;busy=false;markSeen();renderGame();scheduleAI();});$('#history').onclick=showHistory;
+ $('#skipLive')?.addEventListener('click',skipLive);updatePresenceLabel();
+ $('#roll').onclick=()=>takeRoll();$('#watchTurn')?.addEventListener('click',()=>playReplay(last));$('#lastReplay')?.addEventListener('click',()=>playReplay(last));$('#skipTurn')?.addEventListener('click',()=>{write(`seen.${session.code}`,current.seq);renderGame();});$('#stopReplay')?.addEventListener('click',()=>{replayStop=true;replayId++;replaying=false;busy=false;markSeen();renderGame();scheduleAI();if(latestLive)receiveLive(latestLive);});$('#history').onclick=showHistory;
  $('#nextHalf')?.addEventListener('click',()=>{session.between=false;saveSession();renderGame();scheduleAI();});$('#sendTurn')?.addEventListener('click',sendTurn);$('#boxScore')?.addEventListener('click',boxScore);$('#rematch')?.addEventListener('click',()=>{if(session.pending){toast('Send your completed turn first.');return;}online?setup('online'):setup(session.mode);});
  scheduleAI();
 }
@@ -148,7 +157,7 @@ function logHTML(log,ts){if(!log?.length)return '<div class="empty" style="paddi
 function markSeen(){if(session?.kind==='online'&&current)write(`seen.${session.code}`,current.seq);}
 function scheduleAI(){clearTimeout(autoTimer);if(document.hidden)return;if(session?.kind==='offline'&&session.mode==='solo'&&session.state.half===1&&!session.state.over&&!session.between&&!busy&&!replaying)autoTimer=setTimeout(()=>takeRoll(true),650/speed);}
 async function takeRoll(ai=false){
- if(!session||busy||replaying||session.state.over||session.pending||session.between||!isMine())return;
+ if(!session||busy||replaying||activeLive()||(session.kind==='online'&&!liveReady)||session.state.over||session.pending||session.between||!isMine())return;
  if(session.kind==='online'&&current?.lastTurn?.by!==Cloud.user?.uid&&current?.lastTurn&&read(`seen.${session.code}`,0)<current.seq)return;
  if(session.kind==='offline'&&session.mode==='solo'&&session.state.half===1&&!ai)return;
  const g=generation,active=session;busy=true;clearTimeout(autoTimer);const before=clone(active.state),dice=rollDice(),result=applyRoll(before,dice);
@@ -157,7 +166,7 @@ async function takeRoll(ai=false){
   active.turnRolls.push({dice});
   if(result.event.endTurn){active.history.push({index:active.history.length,start:clone(active.turnStart),rolls:clone(active.turnRolls),time:Date.now()});active.turnStart=clone(result.state);active.turnRolls=[];active.between=!result.state.over;}
  }else{active.rolls.push({dice});if(result.event.endTurn)active.pending=true;}
- saveSession();const button=$('#roll');if(button){button.disabled=true;button.textContent='In play…';}
+ saveSession();if(active.kind==='online')publishPreview(active);const button=$('#roll');if(button){button.disabled=true;button.textContent='In play…';}
  try{await animateDice($('#dice'),dice);if(g!==generation)return;await animatePlay($('#field'),before,result,active.teams);}catch(e){console.error('Animation:',e);}
  finally{if(g===generation){busy=false;renderGame();if(active.kind==='online'&&active.pending)sendTurn();}}
 }
@@ -177,7 +186,7 @@ async function playReplay(turn){
   try{await animateDice($('#dice'),turn.rolls[i].dice);if(replayStop||id!==replayId||g!==generation)break;await animatePlay($('#field'),s,result,active.teams);}catch{}
   if(replayStop||id!==replayId||g!==generation)break;s=result.state;renderGame(s);
  }
- if(g===generation&&id===replayId&&!replayStop){replaying=false;busy=false;renderGame();scheduleAI();}
+ if(g===generation&&id===replayId&&!replayStop){replaying=false;busy=false;renderGame();scheduleAI();if(latestLive)receiveLive(latestLive);}
 }
 async function showHistory(){
  if(busy&&!replaying)return;showModal('Every inning has a story.',`<p class="note" id="historyStatus">Loading saved turns…</p><div class="history-list" id="historyItems"></div>`);
@@ -186,10 +195,76 @@ async function showHistory(){
 function boxScore(){const s=session.state;showModal('The final word.',`${lineTable(s,session.teams)}${session.teams.map((t,j)=>`<h3 style="margin-top:24px">${teamLabel(t)}</h3><table class="recapstats"><thead><tr><th>PLAYER</th><th>AB</th><th>H</th><th>R</th><th>RBI</th><th>HR</th><th>BB</th></tr></thead><tbody>${t.players.map((p,i)=>{const z=s.stats[j][i];return `<tr><td>${esc(p.name)}</td>${['ab','h','r','rbi','hr','bb'].map(k=>`<td>${z[k]}</td>`).join('')}</tr>`;}).join('')}</tbody></table>`).join('')}<p class="fineprint" style="margin-top:20px">Sacrifice flies with fewer than two outs do not count as at-bats. Player cards are cosmetic.</p>`);}
 window.addEventListener('online',()=>{toast('Connection restored.');if(session?.pending&&session.kind==='online')sendTurn();});
 window.addEventListener('offline',()=>toast('You’re offline. Local games still work. Online turns remain saved here.'));
-document.addEventListener('visibilitychange',()=>{if(document.hidden){saveSession();clearTimeout(autoTimer);}else scheduleAI();});
-window.addEventListener('beforeunload',()=>saveSession());
+document.addEventListener('visibilitychange',()=>{parkAudio(view==='game');if(document.hidden){saveSession();clearTimeout(autoTimer);if(livePlaying)skipLive();}else{scheduleAI();if(latestLive)receiveLive(latestLive);}if(current?.code&&view==='game')sendPresence(!document.hidden);updatePresenceLabel();});
+window.addEventListener('beforeunload',()=>{saveSession();if(current?.code&&view==='game')sendPresence(false);});
 window.addEventListener('error',e=>{console.error(e.error);});
 // No Firebase dependency is loaded until online play or account access is requested.
 home();
 if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').then(reg=>{reg.addEventListener('updatefound',()=>{const w=reg.installing;w?.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller)toast('An update is ready. Close all Cardpark tabs and reopen to update.');});});}).catch(()=>{});
 if(location.hash.startsWith('#join=')){const code=location.hash.slice(6).replace(/[^A-Za-z2-9]/g,'').toUpperCase();history.replaceState(null,'',location.pathname+location.search);lobby().then(()=>{if(Cloud.user){joinDialog();if($('#inviteCode'))$('#inviteCode').value=code;}else{write('invite',code);toast('Sign in, then choose Join with code.');}});}
+
+function soundSettings(){
+ unlockAudio();showModal('Bring the ballpark to life.',`<p class="note">Dice clatter, bat cracks, glove catches, footsteps, scoring fanfares, and a cheering crowd.</p><div class="row"><label for="soundEnabled" style="margin:0">Game sounds</label><input type="checkbox" id="soundEnabled" ${sound?'checked':''}></div><div class="form-group"><label for="soundVolume">Volume <span id="volumeValue">${Math.round(soundVolume*100)}%</span></label><input id="soundVolume" type="range" min="0" max="1" step=".05" value="${soundVolume}"></div><div class="row"><label for="crowdEnabled" style="margin:0">Crowd atmosphere & cheers</label><input type="checkbox" id="crowdEnabled" ${crowdSound?'checked':''}></div><button class="btn wide" id="testAudio" style="margin-top:22px">Test the ballpark sound ⚾</button><p class="fineprint" style="margin-top:14px">Your device’s media volume controls the final level. Sound pauses when the game is hidden.</p>`);
+ const apply=()=>{sound=$('#soundEnabled').checked;soundVolume=Number($('#soundVolume').value);crowdSound=$('#crowdEnabled').checked;write('sound',sound);write('volume',soundVolume);write('crowd',crowdSound);configureAudio({enabled:sound,volume:soundVolume,crowd:crowdSound});$('#volumeValue').textContent=Math.round(soundVolume*100)+'%';$('#sound').textContent=sound?'🔊':'🔇';$('#sound').setAttribute('aria-pressed',String(sound));};
+ $('#soundEnabled').onchange=apply;$('#soundVolume').oninput=apply;$('#crowdEnabled').onchange=apply;$('#testAudio').onclick=()=>{unlockAudio();soundFX('homerun');};
+}
+function stopLive(){
+ const code=current?.code;
+ if(code&&view==='game'&&Cloud.user)Cloud.presence(code,false).catch(()=>{});
+ unsubLive?.();unsubPresence?.();unsubLive=unsubPresence=null;clearInterval(heartbeatTimer);clearInterval(presenceTimer);heartbeatTimer=presenceTimer=null;presenceData={};liveFeed=null;livePlaying=false;liveEpoch++;latestLive=null;liveReady=false;liveError=false;liveStarting=false;
+}
+function sendPresence(active){if(current?.code&&Cloud.user&&navigator.onLine)Cloud.presence(current.code,active).catch(()=>{});}
+function opponentHere(){if(!current||!Cloud.user||!navigator.onLine)return false;const id=current.players.find(x=>x!==Cloud.user.uid),p=presenceData[id],at=p?.at?.toMillis?.()||0;return !!(p?.active&&Date.now()-at<75000);}
+function updatePresenceLabel(){const label=$('#onlinePresence');if(!label)return;label.classList.toggle('here',opponentHere());label.textContent=!navigator.onLine?'Offline · local draft':liveError?'Live connection unavailable':opponentHere()?'● BOTH IN THE PARK':'◌ ASYNC READY';}
+async function startLive(code,g){
+ if(liveStarting)return;liveStarting=true;
+ const fail=e=>{if(g!==generation)return;liveError=true;liveReady=true;updatePresenceLabel();if(!busy&&!replaying&&session)renderGame();};
+ try{
+  const u=await Cloud.watchLive(code,t=>{if(g!==generation)return;liveReady=true;if(t)receiveLive(t);if(!busy&&!replaying&&session)renderGame();},fail);if(g!==generation){u();return;}unsubLive=u;
+  const p=await Cloud.watchPresence(code,data=>{if(g!==generation)return;presenceData=data;updatePresenceLabel();},fail);if(g!==generation){p();return;}unsubPresence=p;
+  sendPresence(!document.hidden);heartbeatTimer=setInterval(()=>{if(!document.hidden)sendPresence(true);},25000);presenceTimer=setInterval(updatePresenceLabel,5000);
+  if(session?.kind==='online'&&isMine()&&session.rolls.length)publishPreview(session);
+ }catch(e){fail(e);}
+}
+function publishPreview(active){
+ const g=generation;Cloud.publishLive(active.code,active.seq,clone(active.start),clone(active.rolls)).catch(e=>{if(g!==generation)return;liveError=true;updatePresenceLabel();console.warn('Live preview:',e.message);});
+}
+function activeLive(){return !!(session?.kind==='online'&&liveFeed&&current&&(liveFeed.seq===current.seq||((liveFeed.seq+1===current.seq)&&(livePlaying||liveFeed.played<liveFeed.rolls.length))));}
+function receiveLive(t){
+ if(!t||!current||view!=='game')return;latestLive=t;
+ if(document.hidden||replaying||!session)return;
+ const seq=t.seq??t.index;if(!Number.isInteger(seq)||!Array.isArray(t.rolls)||!t.start)return;
+ if(t.by===Cloud.user?.uid){
+  // Recover a published mid-turn draft when reopening on another device.
+  if(seq===current.seq&&isMine()&&!busy&&t.rolls.length>session.rolls.length&&equivalent(t.start,session.start)){
+   const prefix=session.rolls.every((r,i)=>equivalent(r,t.rolls[i]));if(!prefix)return;
+   try{const recovered=new TurnFeed(seq,t.by,t.start);recovered.update(t.rolls);recovered.skip();session.rolls=clone(t.rolls);session.state=clone(recovered.state);session.log=clone(recovered.log);session.pending=recovered.ended;saveSession();renderGame();}catch(e){console.warn(e);}
+  }return;
+ }
+ if(seq!==current.seq&&!(seq+1===current.seq&&(liveFeed?.seq===seq||t.committed)))return;
+ // Do not restart a fully watched completed turn after a reconnect.
+ if(seq<current.seq&&read(`seen.${session.code}`,0)>=seq+1&&!livePlaying)return;
+ if(seq===current.seq&&current.turnUid!==t.by)return;
+ try{
+  if(!liveFeed||liveFeed.seq!==seq){liveEpoch++;livePlaying=false;liveFeed=new TurnFeed(seq,t.by,t.start);}
+  liveFeed.update(t.rolls);pumpLive();
+ }catch(e){console.warn('Ignored invalid live preview:',e);}
+}
+async function pumpLive(){
+ if(livePlaying||replaying||busy||!liveFeed||document.hidden)return;
+ const feed=liveFeed,g=generation,id=++liveEpoch;livePlaying=true;busy=true;
+ try{
+  while(feed.played<feed.rolls.length&&g===generation&&id===liveEpoch&&!document.hidden){
+   const before=clone(feed.state);renderGame(before);const frame=feed.next();
+   session.lastDice=frame.result.event.dice;
+   await animateDice($('#dice'),frame.result.event.dice);
+   if(g!==generation||id!==liveEpoch)break;
+   await animatePlay($('#field'),before,frame.result,session.teams);
+   if(g!==generation||id!==liveEpoch)break;
+   renderGame();
+  }
+ }catch(e){console.warn('Live animation:',e);feed.skip();}
+ finally{if(g===generation&&id===liveEpoch){livePlaying=false;busy=false;finishLiveSeen();renderGame();}}
+}
+function finishLiveSeen(){if(liveFeed?.ended&&liveFeed.played===liveFeed.rolls.length&&session?.code)write(`seen.${session.code}`,liveFeed.seq+1);}
+function skipLive(){if(!liveFeed)return;liveEpoch++;livePlaying=false;busy=false;liveFeed.skip();finishLiveSeen();if(view==='game'&&session)renderGame();}
