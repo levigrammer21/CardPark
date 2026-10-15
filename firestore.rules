@@ -1,110 +1,98 @@
 rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
-  function signedIn() { return request.auth != null; }
-  function participant(m) { return signedIn() && request.auth.uid in m.players; }
-  function team(t) {
-   return t is map && t.keys().hasOnly(['name','color','players'])
-    && t.name is string && t.name.size() > 0 && t.name.size() <= 24
-    && t.color is string && t.color.matches('#[a-fA-F0-9]{6}')
-    && t.players is list && t.players.size() == 4;
-  }
+  function signed() { return request.auth != null; }
+  function player(m) { return signed() && request.auth.uid in m.players; }
+  function leagueMember(id) { return signed() && id != '' && request.auth.uid in get(/databases/$(database)/documents/cardparkLeagues/$(id)).data.memberIds; }
+  function canWatch(m) { return player(m) || leagueMember(m.get('leagueId','')); }
+  function team(t) { return t is map && t.keys().hasOnly(['name','color','players']) && t.name is string && t.name.size() > 0 && t.name.size() <= 24 && t.color is string && t.color.matches('#[a-fA-F0-9]{6}') && t.players is list && t.players.size() == 4; }
   match /cardparkUsers/{uid} {
-   allow read: if signedIn() && request.auth.uid == uid;
-   allow create, update: if signedIn() && request.auth.uid == uid
-    && request.resource.data.keys().hasOnly(['team','updatedAt'])
-    && team(request.resource.data.team) && request.resource.data.updatedAt == request.time;
-   allow delete: if signedIn() && request.auth.uid == uid;
+   allow read, delete: if signed() && request.auth.uid == uid;
+   allow create, update: if signed() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['team','updatedAt']) && team(request.resource.data.team) && request.resource.data.updatedAt == request.time;
+  }
+  match /cardparkLocks/{code} {
+   allow read: if signed() && resource.data.owner == request.auth.uid;
+   allow create: if signed() && request.resource.data.keys().hasOnly(['owner','hash']) && request.resource.data.owner == request.auth.uid && request.resource.data.hash is string && request.resource.data.hash.size() <= 64 && getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data.owner == request.auth.uid;
+   allow update, delete: if false;
+  }
+  match /cardparkOpenGames/{code} {
+   allow read: if signed();
+   function parentAfter() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+   allow create: if signed() && request.resource.data.keys().hasOnly(['code','owner','name','color','innings','locked','createdAt']) && request.resource.data.owner == request.auth.uid && parentAfter().owner == request.auth.uid && parentAfter().status == 'waiting' && parentAfter().leagueId == '' && request.resource.data.code == code && request.resource.data.name == parentAfter().teams[0].name && request.resource.data.locked == parentAfter().locked && request.resource.data.createdAt == request.time;
+   allow delete: if signed() && (resource.data.owner == request.auth.uid || (parentAfter().status == 'active' && request.auth.uid in parentAfter().players));
+   allow update: if false;
   }
   match /cardparkMatches/{code} {
-   // Exact invite lookup is allowed to signed-in users. Codes are unguessable 8-character secrets.
-   // Collection queries must include where('players', 'array-contains', currentUid).
-   allow get: if signedIn();
-   allow list: if participant(resource.data);
-   allow create: if signedIn()
-    && code.matches('[A-HJ-NP-Z2-9]{8}')
-    && request.resource.data.keys().hasOnly(['v','code','owner','players','teams','status','turnUid','seq','stateJSON','lastTurn','createdAt','updatedAt'])
-    && request.resource.data.v == 1 && request.resource.data.code == code
-    && request.resource.data.owner == request.auth.uid
-    && request.resource.data.players == [request.auth.uid]
-    && request.resource.data.teams.size() == 2 && team(request.resource.data.teams[0])
-    && request.resource.data.teams[1] == null
-    && request.resource.data.status == 'waiting' && request.resource.data.seq == 0
-    && request.resource.data.turnUid == request.auth.uid
-    && request.resource.data.stateJSON is string && request.resource.data.stateJSON.size() < 30000
-    && request.resource.data.lastTurn == null
-    && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
-   allow update: if signedIn() && (joining() || playing());
-   function joining() {
-    return resource.data.status == 'waiting' && resource.data.players.size() == 1
-     && request.auth.uid != resource.data.owner
-     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players','teams','status','updatedAt'])
-     && request.resource.data.players == [resource.data.owner,request.auth.uid]
-     && request.resource.data.teams.size() == 2
-     && request.resource.data.teams[0] == resource.data.teams[0]
-     && team(request.resource.data.teams[1])
-     && request.resource.data.status == 'active' && request.resource.data.updatedAt == request.time;
-   }
+   allow get: if signed() && (!exists(/databases/$(database)/documents/cardparkMatches/$(code)) || resource.data.status == 'waiting' || canWatch(resource.data));
+   allow list: if player(resource.data) || leagueMember(resource.data.get('leagueId',''));
+   function validInitial(m) { return m.v == 2 && m.code == code && m.seq == 0 && m.revision == 0 && m.clutchUsed == [false,false] && m.progress == null && m.lastAction == null && m.lastTurn == null && m.stateJSON is string && m.stateJSON.size() < 50000 && m.turnUid == m.owner && m.owner == m.players[0] && m.joinProof == '' && m.createdAt == request.time && m.updatedAt == request.time; }
+   allow create: if signed() && validInitial(request.resource.data) && (publicCreation() || leagueCreation());
+   function publicCreation() { let m=request.resource.data;return m.owner == request.auth.uid && m.players == [request.auth.uid] && m.status == 'waiting' && m.leagueId == '' && m.fixtureId == '' && m.teams.size() == 2 && team(m.teams[0]) && m.teams[1] == null && m.locked is bool && getAfter(/databases/$(database)/documents/cardparkLocks/$(code)).data.owner == request.auth.uid; }
+   function leagueCreation() { let m=request.resource.data;let l=get(/databases/$(database)/documents/cardparkLeagues/$(m.leagueId)).data;return m.leagueId != '' && m.status == 'active' && m.players.size() == 2 && request.auth.uid in m.players && m.players[0] != m.players[1] && m.players[0] in l.memberIds && m.players[1] in l.memberIds && l.status in ['season','playoffs'] && m.locked == false && team(m.teams[0]) && team(m.teams[1]); }
+   allow update: if signed() && (joining() || migrating() || playing() || finishing());
+   function joining() { let a=resource.data;let b=request.resource.data;return a.status == 'waiting' && a.players.size() == 1 && request.auth.uid != a.owner && b.diff(a).affectedKeys().hasOnly(['players','teams','status','joinProof','updatedAt']) && b.players == [a.owner,request.auth.uid] && b.teams.size() == 2 && b.teams[0] == a.teams[0] && team(b.teams[1]) && b.status == 'active' && b.updatedAt == request.time && (!a.get('locked',false) || b.joinProof == get(/databases/$(database)/documents/cardparkLocks/$(code)).data.hash); }
+   function migrating() { let a=resource.data;let b=request.resource.data;return a.v == 1 && b.v == 2 && player(a) && a.status != 'complete' && b.diff(a).affectedKeys().hasOnly(['v','revision','stateJSON','progress','lastAction','clutchUsed','locked','joinProof','leagueId','fixtureId','updatedAt']) && b.revision == 0 && (b.progress == null || (b.progress.rolls is list && b.progress.rolls.size() > 0 && b.progress.rolls.size() <= 2000 && b.progress.afterJSON is string && b.progress.ended is bool)) && b.lastAction == null && b.clutchUsed == [false,false] && b.locked == false && b.leagueId == '' && b.fixtureId == '' && b.joinProof == '' && b.updatedAt == request.time; }
    function playing() {
-    return participant(resource.data) && resource.data.status == 'active'
-     && resource.data.turnUid == request.auth.uid
-     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stateJSON','seq','turnUid','status','lastTurn','updatedAt'])
-     && request.resource.data.seq == resource.data.seq + 1
-     && request.resource.data.stateJSON is string && request.resource.data.stateJSON.size() < 30000
-     && request.resource.data.lastTurn.by == request.auth.uid
-     && request.resource.data.lastTurn.index == resource.data.seq
-     && request.resource.data.lastTurn.startJSON == resource.data.stateJSON
-     && request.resource.data.lastTurn.rolls is list && request.resource.data.lastTurn.rolls.size() > 0
-     && request.resource.data.lastTurn.rolls.size() <= 2000
-     && request.resource.data.updatedAt == request.time
-     && ((request.resource.data.status == 'active'
-       && request.resource.data.turnUid in resource.data.players
-       && request.resource.data.turnUid != request.auth.uid)
-      || (request.resource.data.status == 'complete' && request.resource.data.turnUid == ''));
+    let a=resource.data;let b=request.resource.data;let side=a.players[0] == request.auth.uid ? 0 : 1;let oldSize=a.progress == null ? 0 : a.progress.rolls.size();
+    return a.v == 2 && player(a) && a.status == 'active' && a.turnUid == request.auth.uid
+     && b.diff(a).affectedKeys().hasOnly(['progress','revision','lastAction','clutchUsed','updatedAt'])
+     && b.revision == a.revision + 1 && b.updatedAt == request.time
+     && b.progress.afterJSON is string && b.progress.afterJSON.size() < 50000 && b.progress.ended is bool
+     && b.lastAction.by == request.auth.uid && b.lastAction.revision == b.revision && b.lastAction.seq == a.seq
+     && b.lastAction.afterJSON == b.progress.afterJSON && b.lastAction.dice.size() == 2 && b.lastAction.dice[0] in [1,2,3,4,5,6] && b.lastAction.dice[1] in [1,2,3,4,5,6]
+     && b.progress.rolls.size() <= 2000
+     && ((b.lastAction.clutch == false && (a.progress == null || a.progress.ended == false) && b.progress.rolls.size() == oldSize + 1 && b.clutchUsed == a.clutchUsed)
+      || (b.lastAction.clutch == true && oldSize > 0 && b.progress.rolls.size() == oldSize && a.clutchUsed[side] == false && b.clutchUsed[side] == true && b.clutchUsed[1-side] == a.clutchUsed[1-side]))
+     && getAfter(/databases/$(database)/documents/cardparkMatches/$(code)/events/$(b.lastAction.id)).data == b.lastAction;
+   }
+   function finishing() {
+    let a=resource.data;let b=request.resource.data;
+    return a.v == 2 && player(a) && a.status == 'active' && a.turnUid == request.auth.uid && a.progress != null && a.progress.ended == true
+     && b.diff(a).affectedKeys().hasOnly(['stateJSON','progress','lastTurn','seq','status','turnUid','updatedAt','completedAt'])
+     && b.seq == a.seq + 1 && b.progress == null && b.stateJSON == a.progress.afterJSON
+     && b.lastTurn.by == request.auth.uid && b.lastTurn.index == a.seq && b.lastTurn.startJSON == a.stateJSON && b.lastTurn.rolls == a.progress.rolls && b.updatedAt == request.time
+     && ((b.status == 'active' && b.turnUid in a.players && b.turnUid != request.auth.uid) || (b.status == 'complete' && b.turnUid == '' && b.completedAt == request.time));
    }
    allow delete: if false;
-   match /presence/{uid} {
-    function parent() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
-    allow read: if participant(parent());
-    allow create, update: if participant(parent()) && request.auth.uid == uid
-     && request.resource.data.keys().hasOnly(['active','at'])
-     && request.resource.data.active is bool && request.resource.data.at == request.time;
-    allow delete: if false;
-   }
-   match /live/current {
-    function parent() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
-    function validLive() {
-     return participant(parent()) && parent().status == 'active'
-      && parent().turnUid == request.auth.uid
-      && request.resource.data.keys().hasOnly(['seq','by','startJSON','rolls','updatedAt'])
-      && request.resource.data.seq == parent().seq
-      && request.resource.data.by == request.auth.uid
-      && request.resource.data.startJSON == parent().stateJSON
-      && request.resource.data.rolls is list
-      && request.resource.data.rolls.size() > 0 && request.resource.data.rolls.size() <= 2000
-      && request.resource.data.updatedAt == request.time;
-    }
-    allow read: if participant(parent());
-    allow create: if validLive();
-    allow update: if validLive()
-     && (resource.data.seq < request.resource.data.seq
-      || (resource.data.seq == request.resource.data.seq
-       && resource.data.by == request.resource.data.by
-       && resource.data.startJSON == request.resource.data.startJSON
-       && request.resource.data.rolls.size() > resource.data.rolls.size()));
-    allow delete: if false;
+   match /events/{eventId} {
+    function before() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    function after() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    allow read: if canWatch(before());
+    allow create: if player(before()) && before().turnUid == request.auth.uid && before().status == 'active' && request.resource.data.by == request.auth.uid && request.resource.data.id == eventId && request.resource.data.revision == before().revision + 1 && after().lastAction == request.resource.data;
+    allow update, delete: if false;
    }
    match /turns/{turnId} {
-    function parentBefore() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
-    function parentAfter() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
-    allow read: if participant(parentBefore());
-    allow create: if participant(parentBefore())
-     && parentBefore().turnUid == request.auth.uid && parentBefore().status == 'active'
-     && request.resource.data.by == request.auth.uid
-     && request.resource.data.index == parentBefore().seq
-     && parentAfter().seq == parentBefore().seq + 1
-     && parentAfter().lastTurn == request.resource.data;
+    function before() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    function after() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    allow read: if canWatch(before());
+    allow create: if player(before()) && before().turnUid == request.auth.uid && request.resource.data.by == request.auth.uid && request.resource.data.index == before().seq && after().seq == before().seq + 1 && after().lastTurn == request.resource.data;
     allow update, delete: if false;
+   }
+   match /presence/{uid} {
+    function parent() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    allow read: if canWatch(parent());
+    allow create, update: if canWatch(parent()) && request.auth.uid == uid && request.resource.data.keys().hasOnly(['active','at']) && request.resource.data.active is bool && request.resource.data.at == request.time;
+    allow delete: if false;
+   }
+   // Old preview documents are read-only for compatibility; version 2 uses authoritative events.
+   match /live/{id} { allow read: if canWatch(get(/databases/$(database)/documents/cardparkMatches/$(code)).data);allow write: if false; }
+  }
+  match /cardparkLeagues/{leagueId} {
+   allow read: if signed();
+   function validConfig(l) { return l.cap is int && l.cap >= 3 && l.cap <= 12 && l.gamesPerTeam is int && l.gamesPerTeam >= 1 && l.gamesPerTeam <= 30 && l.innings in [3,6,9] && l.playoffTeams in [2,4,8]; }
+   allow create: if signed() && request.resource.data.id == leagueId && request.resource.data.owner == request.auth.uid && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 32 && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.entries.size() == 1 && request.resource.data.entries[0].uid == request.auth.uid && request.resource.data.status == 'forming' && request.resource.data.seasonJSON == '[]' && request.resource.data.playoffsJSON == '[]' && validConfig(request.resource.data) && request.resource.data.updatedAt == request.time;
+   allow update: if signed() && (joiningLeague() || startingLeague() || recordingResult());
+   function joiningLeague() { let a=resource.data;let b=request.resource.data;return a.status == 'forming' && !(request.auth.uid in a.memberIds) && a.memberIds.size() < a.cap && b.diff(a).affectedKeys().hasOnly(['memberIds','entries','updatedAt']) && b.memberIds == a.memberIds.concat([request.auth.uid]) && b.entries.size() == a.entries.size() + 1 && b.entries.hasAll(a.entries) && b.entries[b.entries.size()-1].uid == request.auth.uid && b.updatedAt == request.time; }
+   function startingLeague() { let a=resource.data;let b=request.resource.data;return a.owner == request.auth.uid && a.status == 'forming' && a.memberIds.size() >= 3 && a.memberIds.size() <= 12 && b.diff(a).affectedKeys().hasOnly(['status','gamesPerTeam','playoffTeams','seasonJSON','updatedAt']) && b.status == 'season' && b.seasonJSON is string && b.seasonJSON.size() < 150000 && validConfig(b) && b.updatedAt == request.time; }
+   function recordingResult() { let a=resource.data;let b=request.resource.data;let m=getAfter(/databases/$(database)/documents/cardparkMatches/$(b.lastResultCode)).data;return request.auth.uid in a.memberIds && a.status in ['season','playoffs'] && b.diff(a).affectedKeys().hasOnly(['seasonJSON','playoffsJSON','status','champion','lastResultCode','updatedAt']) && b.status in ['season','playoffs','complete'] && m.leagueId == leagueId && m.status == 'complete' && request.auth.uid in m.players && b.updatedAt == request.time; }
+   allow delete: if false;
+   match /members/{uid} {
+    function parent() { return get(/databases/$(database)/documents/cardparkLeagues/$(leagueId)).data; }
+    function after() { return getAfter(/databases/$(database)/documents/cardparkLeagues/$(leagueId)).data; }
+    allow read: if signed() && request.auth.uid in parent().memberIds;
+    allow create: if signed() && request.auth.uid == uid && uid in after().memberIds && after().status == 'forming' && request.resource.data.keys().hasOnly(['team']) && team(request.resource.data.team);
+    allow update: if signed() && request.auth.uid == uid && parent().status == 'forming' && request.resource.data.keys().hasOnly(['team']) && team(request.resource.data.team);
+    allow delete: if false;
    }
   }
  }
