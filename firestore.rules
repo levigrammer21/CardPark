@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signedIn() { return request.auth != null; }
+  function participant(m) { return signedIn() && request.auth.uid in m.players; }
+  function team(t) {
+   return t is map && t.keys().hasOnly(['name','color','players'])
+    && t.name is string && t.name.size() > 0 && t.name.size() <= 24
+    && t.color is string && t.color.matches('#[a-fA-F0-9]{6}')
+    && t.players is list && t.players.size() == 4;
+  }
+  match /cardparkUsers/{uid} {
+   allow read: if signedIn() && request.auth.uid == uid;
+   allow create, update: if signedIn() && request.auth.uid == uid
+    && request.resource.data.keys().hasOnly(['team','updatedAt'])
+    && team(request.resource.data.team) && request.resource.data.updatedAt == request.time;
+   allow delete: if signedIn() && request.auth.uid == uid;
+  }
+  match /cardparkMatches/{code} {
+   // Exact invite lookup is allowed to signed-in users. Codes are unguessable 8-character secrets.
+   // Collection queries must include where('players', 'array-contains', currentUid).
+   allow get: if signedIn();
+   allow list: if participant(resource.data);
+   allow create: if signedIn()
+    && code.matches('[A-HJ-NP-Z2-9]{8}')
+    && request.resource.data.keys().hasOnly(['v','code','owner','players','teams','status','turnUid','seq','stateJSON','lastTurn','createdAt','updatedAt'])
+    && request.resource.data.v == 1 && request.resource.data.code == code
+    && request.resource.data.owner == request.auth.uid
+    && request.resource.data.players == [request.auth.uid]
+    && request.resource.data.teams.size() == 2 && team(request.resource.data.teams[0])
+    && request.resource.data.teams[1] == null
+    && request.resource.data.status == 'waiting' && request.resource.data.seq == 0
+    && request.resource.data.turnUid == request.auth.uid
+    && request.resource.data.stateJSON is string && request.resource.data.stateJSON.size() < 30000
+    && request.resource.data.lastTurn == null
+    && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+   allow update: if signedIn() && (joining() || playing());
+   function joining() {
+    return resource.data.status == 'waiting' && resource.data.players.size() == 1
+     && request.auth.uid != resource.data.owner
+     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players','teams','status','updatedAt'])
+     && request.resource.data.players == [resource.data.owner,request.auth.uid]
+     && request.resource.data.teams.size() == 2
+     && request.resource.data.teams[0] == resource.data.teams[0]
+     && team(request.resource.data.teams[1])
+     && request.resource.data.status == 'active' && request.resource.data.updatedAt == request.time;
+   }
+   function playing() {
+    return participant(resource.data) && resource.data.status == 'active'
+     && resource.data.turnUid == request.auth.uid
+     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stateJSON','seq','turnUid','status','lastTurn','updatedAt'])
+     && request.resource.data.seq == resource.data.seq + 1
+     && request.resource.data.stateJSON is string && request.resource.data.stateJSON.size() < 30000
+     && request.resource.data.lastTurn.by == request.auth.uid
+     && request.resource.data.lastTurn.index == resource.data.seq
+     && request.resource.data.lastTurn.startJSON == resource.data.stateJSON
+     && request.resource.data.lastTurn.rolls is list && request.resource.data.lastTurn.rolls.size() > 0
+     && request.resource.data.lastTurn.rolls.size() <= 2000
+     && request.resource.data.updatedAt == request.time
+     && ((request.resource.data.status == 'active'
+       && request.resource.data.turnUid in resource.data.players
+       && request.resource.data.turnUid != request.auth.uid)
+      || (request.resource.data.status == 'complete' && request.resource.data.turnUid == ''));
+   }
+   allow delete: if false;
+   match /turns/{turnId} {
+    function parentBefore() { return get(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    function parentAfter() { return getAfter(/databases/$(database)/documents/cardparkMatches/$(code)).data; }
+    allow read: if participant(parentBefore());
+    allow create: if participant(parentBefore())
+     && parentBefore().turnUid == request.auth.uid && parentBefore().status == 'active'
+     && request.resource.data.by == request.auth.uid
+     && request.resource.data.index == parentBefore().seq
+     && parentAfter().seq == parentBefore().seq + 1
+     && parentAfter().lastTurn == request.resource.data;
+    allow update, delete: if false;
+   }
+  }
+ }
+}
