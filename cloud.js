@@ -55,14 +55,14 @@ export async function upgradeMatch(code,draft=null){
  });
 }
 
-export async function play(code,revision,dice,clutch,actionId){
+export async function play(code,revision,dice,clutch,actionId,mode='swing'){
  const {F}=await connect(),uid=requireUser();
  return F.runTransaction(db,async tx=>{
   const ref=F.doc(db,'cardparkMatches',code),eventRef=F.doc(db,'cardparkMatches',code,'events',actionId),[snap,previous]=await Promise.all([tx.get(ref),tx.get(eventRef)]);
   if(previous.exists())return previous.data();if(!snap.exists())throw Error('Game not found.');const m=snap.data();
   if(m.v<2)throw Error('Reopen this game to update it.');if(m.status!=='active'||m.turnUid!==uid)throw Error('It is not your turn.');if(m.revision!==revision)throw Error('The game changed on another device. Reopen it before rolling.');
-  const turnStart=JSON.parse(m.stateJSON),played=playFromTurn(turnStart,m.progress?.rolls||[],dice,clutch),rev=revision+1;
-  const action={id:actionId,revision:rev,seq:m.seq,by:uid,dice:[...dice],clutch:!!clutch,originalDice:played.rolls.at(-1).originalDice||null,beforeJSON:JSON.stringify(played.before),afterJSON:JSON.stringify(played.result.state),time:Date.now()};
+  const turnStart=JSON.parse(m.stateJSON),played=playFromTurn(turnStart,m.progress?.rolls||[],dice,clutch,mode),rev=revision+1;
+  const action={id:actionId,revision:rev,seq:m.seq,by:uid,dice:[...dice],mode:played.rolls.at(-1).mode||'swing',clutch:!!clutch,originalDice:played.rolls.at(-1).originalDice||null,beforeJSON:JSON.stringify(played.before),afterJSON:JSON.stringify(played.result.state),time:Date.now()};
   const progress={rolls:played.rolls,afterJSON:action.afterJSON,ended:played.result.event.endTurn};
   tx.set(eventRef,action);tx.update(ref,{progress,clutchUsed:played.result.state.clutch,revision:rev,lastAction:action,updatedAt:F.serverTimestamp()});return action;
  });

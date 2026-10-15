@@ -15,6 +15,7 @@ export function soundFX(name){if(muted())return;switch(name){
  case 'dice':burst(.055,.65,2200,'highpass');tone(260+Math.random()*280,.04,'triangle',.2);break;
  case 'settle':burst(.09,.7,1250,'bandpass');tone(140,.08,'triangle',.16);break;
  case 'pitch':burst(.27,.28,950,'bandpass');break;
+ case 'bunt':burst(.065,.62,1600,'highpass');tone(235,.065,'triangle',.22,0,95);break;
  case 'bat':burst(.085,1.5,2300,'highpass');tone(290,.08,'triangle',.6,0,80);break;
  case 'catch':burst(.10,.8,650,'lowpass');tone(120,.08,'sine',.4,0,60);break;
  case 'steps':for(let i=0;i<5;i++)burst(.045,.18,260,'lowpass',i*.12);break;

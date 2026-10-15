@@ -35,15 +35,15 @@ export async function animatePlay(el,before,result,teams){
  soundFX('pitch');await travel(ball,[[50,60],[50,70],[50,88]],330);
  if(!el.isConnected)return;
  if(!['BB','K'].includes(e.code)){
-  soundFX('bat');
-  const target=['HR'].includes(e.code)?[60,-7]:['FO','PO','SF'].includes(e.code)?[31,25]:['GO','DP'].includes(e.code)?[73,43]:[20+(before.plays*17)%60,18];
-  const dest=['FO','PO','SF'].includes(e.code)?el.querySelector('[data-key="def-3"]'):el.querySelector('[data-key="def-2"]');
-  if(dest){dest.classList.add('fielding');travel(dest,[['FO','PO','SF'].includes(e.code)?DEF[3]:DEF[2],target],520);}
-  await travel(ball,[[50,88],[target[0],Math.max(2,target[1]-18)],target],600);
+  soundFX(e.mode==='bunt'?'bunt':'bat');
+  const target=e.mode==='bunt'?[53,76]:['HR'].includes(e.code)?[60,-7]:['FO','PO','SF'].includes(e.code)?[31,25]:['GO','DP'].includes(e.code)?[73,43]:[20+(before.plays*17)%60,18];
+  const dest=e.mode==='bunt'?el.querySelector('[data-key="def-0"]'):['FO','PO','SF'].includes(e.code)?el.querySelector('[data-key="def-3"]'):el.querySelector('[data-key="def-2"]');
+  if(dest){dest.classList.add('fielding');travel(dest,[e.mode==='bunt'?DEF[0]:['FO','PO','SF'].includes(e.code)?DEF[3]:DEF[2],target],520);}
+  await travel(ball,e.mode==='bunt'?[[50,88],[51,82],target]:[[50,88],[target[0],Math.max(2,target[1]-18)],target],e.mode==='bunt'?430:600);
  }else {soundFX('catch');await wait(130);}
  ball.remove();
  const call=el.querySelector('#playCall');call.innerHTML=`<strong>${e.clutch?'CLUTCH · ':''}${esc(e.label)}${e.code==='HR'?'!':''}</strong><small>${esc(teams[e.team].players[e.batter].name)}${e.runs?` • ${e.runs} run${e.runs>1?'s':''}`:''}</small>`;call.classList.add('show');
- if(e.code==='HR')soundFX('homerun');else if(e.runs)soundFX('run');else if(['1B','2B','3B'].includes(e.code))soundFX('hit');else if(e.code==='BB')soundFX('walk');
+ if(e.code==='HR')soundFX('homerun');else if(e.runs)soundFX('run');else if(['1B','2B','3B','BH'].includes(e.code))soundFX('hit');else if(e.code==='BB')soundFX('walk');
  if(e.code==='HR'){for(let i=0;i<26;i++){const c=document.createElement('i');c.className='confetti';c.style.cssText=`left:${15+Math.random()*70}%;background:${['#e5eda2','#e4864c','#fff7da'][i%3]};--dx:${Math.random()*160-80}px`;el.append(c);}}
  if(e.moves.length)soundFX('steps');
  await Promise.all(e.moves.map(async m=>{const token=el.querySelector(`[data-key="run-${m.id}"]`);if(!token)return;token.classList.add('running');const points=[POS[m.from]];for(let b=m.from+1;b<=Math.min(4,m.to);b++)points.push(POS[b]);await travel(token,points,Math.max(1,points.length-1)*470);token.classList.remove('running');if(m.to>=4)token.style.opacity='0';}));
@@ -52,9 +52,19 @@ export async function animatePlay(el,before,result,teams){
  if(result.state.over)soundFX('win');else if(e.endTurn)soundFX('side');
  await wait(650);call.classList.remove('show');await wait(120);
 }
-export async function animateDice(container,dice){
- const end=performance.now()+(reduce()?100:480/speed);
- container.innerHTML=dieHTML(1)+dieHTML(1);container.querySelectorAll('.die').forEach(x=>x.classList.add('rolling'));
- while(performance.now()<end){container.innerHTML=[0,1].map(()=>dieHTML(Math.floor(Math.random()*6)+1).replace('class="die"','class="die rolling"')).join('');soundFX('dice');await new Promise(r=>setTimeout(r,65));}
- container.innerHTML=dice.map(dieHTML).join('');soundFX('settle');await wait(160);
+export async function animateDice(container,dice,options={}){
+ const mode=options.mode||'swing',field=document.querySelector('#field'),stage=document.createElement('div');stage.className='dice-theater';stage.setAttribute('aria-hidden','true');
+ const title=options.clutch?'CLUTCH REROLL':mode==='bunt'?'BUNT':'AT BAT';
+ stage.innerHTML=`<div class="theater-label">${title}</div><div class="theater-dice"></div><div class="theater-result">ROLLING</div>`;const bounds=field?.getBoundingClientRect?.();if(field&&(!bounds||(bounds.top>=-bounds.height*.35&&bounds.bottom<=window.innerHeight+bounds.height*.2)))field.append(stage);else {stage.classList.add('floating');document.body.append(stage);}
+ container.classList.add('is-rolling');
+ const result=document.querySelector('#diceResult');if(result)result.textContent='Rolling';
+ const end=performance.now()+(reduce()?100:Math.max(650,1050/speed));
+ const faces=(values,rolling)=>values.map(n=>dieHTML(n).replace('class="die"',`class="die${rolling?' rolling':''}"`)).join('');
+ try{
+  while(performance.now()<end){const values=[0,1].map(()=>Math.floor(Math.random()*6)+1);container.innerHTML=faces(values,true);stage.querySelector('.theater-dice').innerHTML=faces(values,true);soundFX('dice');await new Promise(r=>setTimeout(r,80));}
+  container.innerHTML=faces(dice,false);stage.querySelector('.theater-dice').innerHTML=faces(dice,false);stage.classList.add('settled');
+  const total=dice[0]+dice[1],label=mode==='bunt'?(total%2===0?'BUNT SINGLE':'BATTER OUT'):`${dice[0]} + ${dice[1]} = ${total}`;
+  stage.querySelector('.theater-result').textContent=label;if(result)result.textContent=mode==='bunt'?label:`${dice[0]} + ${dice[1]} = ${total}`;
+  soundFX('settle');await wait(360);
+ }finally{container.classList.remove('is-rolling');stage.remove();}
 }
