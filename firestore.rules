@@ -2,6 +2,7 @@ rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
   function signed() { return request.auth != null; }
+  function usedCount(x) { return x is int ? x : (x == true ? 1 : 0); }
   function player(m) { return signed() && request.auth.uid in m.players; }
   function ownsTurn(m) { return signed() && (m.turnUid == request.auth.uid || (m.get('leagueId','') != '' && request.auth.uid in m.players && m.turnUid in get(/databases/$(database)/documents/cardparkLeagues/$(m.leagueId)).data.get('botIds',[]))); }
   function leagueMember(id) { return signed() && id != '' && request.auth.uid in get(/databases/$(database)/documents/cardparkLeagues/$(id)).data.memberIds; }
@@ -35,7 +36,7 @@ service cloud.firestore {
   match /cardparkMatches/{code} {
    allow get: if signed() && (!exists(/databases/$(database)/documents/cardparkMatches/$(code)) || resource.data.status == 'waiting' || canWatch(resource.data));
    allow list: if player(resource.data) || leagueMember(resource.data.get('leagueId',''));
-   function validInitial(m) { return m.v == 2 && m.code == code && m.seq == 0 && m.revision == 0 && m.clutchUsed == [false,false] && m.progress == null && m.lastAction == null && m.lastTurn == null && m.stateJSON is string && m.stateJSON.size() < 50000 && m.turnUid == m.owner && m.owner == m.players[0] && m.joinProof == '' && m.createdAt == request.time && m.updatedAt == request.time; }
+   function validInitial(m) { return m.v == 2 && m.code == code && m.seq == 0 && m.revision == 0 && (m.clutchUsed == [false,false] || m.clutchUsed == [0,0]) && m.progress == null && m.lastAction == null && m.lastTurn == null && m.stateJSON is string && m.stateJSON.size() < 50000 && m.turnUid == m.owner && m.owner == m.players[0] && m.joinProof == '' && m.createdAt == request.time && m.updatedAt == request.time; }
    allow create: if signed() && ((validInitial(request.resource.data) && (publicCreation() || leagueCreation())) || simulatedCreation());
    function publicCreation() { let m=request.resource.data;return m.owner == request.auth.uid && m.players == [request.auth.uid] && m.status == 'waiting' && m.leagueId == '' && m.fixtureId == '' && m.teams.size() == 2 && team(m.teams[0]) && m.teams[1] == null && m.locked is bool && getAfter(/databases/$(database)/documents/cardparkLocks/$(code)).data.owner == request.auth.uid; }
    function leagueCreation() { let m=request.resource.data;let l=get(/databases/$(database)/documents/cardparkLeagues/$(m.leagueId)).data;return m.leagueId != '' && m.status == 'active' && m.players.size() == 2 && request.auth.uid in m.players && m.players[0] != m.players[1] && m.players[0] in l.memberIds.concat(l.get('botIds',[])) && m.players[1] in l.memberIds.concat(l.get('botIds',[])) && l.status in ['season','playoffs'] && m.locked == false && team(m.teams[0]) && team(m.teams[1]) && m.get('botIds',[]).hasOnly(m.players) && (m.players[0] in m.get('botIds',[])) == (m.players[0] in l.get('botIds',[])) && (m.players[1] in m.get('botIds',[])) == (m.players[1] in l.get('botIds',[])); }
@@ -44,7 +45,7 @@ service cloud.firestore {
    allow update: if signed() && (joining() || migrating() || playing() || finishing() || cancelling());
    function cancelling() { let a=resource.data;let b=request.resource.data;return a.status == 'waiting' && a.owner == request.auth.uid && a.players.size() == 1 && a.get('leagueId','') == '' && b.diff(a).affectedKeys().hasOnly(['status','turnUid','updatedAt']) && b.status == 'cancelled' && b.turnUid == '' && b.updatedAt == request.time && !existsAfter(/databases/$(database)/documents/cardparkOpenGames/$(code)); }
    function joining() { let a=resource.data;let b=request.resource.data;return a.status == 'waiting' && a.players.size() == 1 && request.auth.uid != a.owner && b.diff(a).affectedKeys().hasOnly(['players','teams','status','joinProof','updatedAt']) && b.players == [a.owner,request.auth.uid] && b.teams.size() == 2 && b.teams[0] == a.teams[0] && team(b.teams[1]) && b.status == 'active' && b.updatedAt == request.time && (!a.get('locked',false) || b.joinProof == get(/databases/$(database)/documents/cardparkLocks/$(code)).data.hash); }
-   function migrating() { let a=resource.data;let b=request.resource.data;return a.v == 1 && b.v == 2 && player(a) && a.status != 'complete' && b.diff(a).affectedKeys().hasOnly(['v','revision','stateJSON','progress','lastAction','clutchUsed','locked','joinProof','leagueId','fixtureId','updatedAt']) && b.revision == 0 && (b.progress == null || (b.progress.rolls is list && b.progress.rolls.size() > 0 && b.progress.rolls.size() <= 2000 && b.progress.afterJSON is string && b.progress.ended is bool)) && b.lastAction == null && b.clutchUsed == [false,false] && b.locked == false && b.leagueId == '' && b.fixtureId == '' && b.joinProof == '' && b.updatedAt == request.time; }
+   function migrating() { let a=resource.data;let b=request.resource.data;return a.v == 1 && b.v == 2 && player(a) && a.status != 'complete' && b.diff(a).affectedKeys().hasOnly(['v','revision','stateJSON','progress','lastAction','clutchUsed','locked','joinProof','leagueId','fixtureId','updatedAt']) && b.revision == 0 && (b.progress == null || (b.progress.rolls is list && b.progress.rolls.size() > 0 && b.progress.rolls.size() <= 2000 && b.progress.afterJSON is string && b.progress.ended is bool)) && b.lastAction == null && (b.clutchUsed == [false,false] || b.clutchUsed == [0,0]) && b.locked == false && b.leagueId == '' && b.fixtureId == '' && b.joinProof == '' && b.updatedAt == request.time; }
    function playing() {
     let a=resource.data;let b=request.resource.data;let side=a.players[0] == a.turnUid ? 0 : 1;let oldSize=a.progress == null ? 0 : a.progress.rolls.size();
     return a.v == 2 && player(a) && a.status == 'active' && ownsTurn(a)
@@ -54,8 +55,8 @@ service cloud.firestore {
      && b.lastAction.by == request.auth.uid && b.lastAction.revision == b.revision && b.lastAction.seq == a.seq
      && b.lastAction.afterJSON == b.progress.afterJSON && b.lastAction.dice.size() == 2 && b.lastAction.dice[0] in [1,2,3,4,5,6] && b.lastAction.dice[1] in [1,2,3,4,5,6]
      && b.progress.rolls.size() <= 2000
-     && ((b.lastAction.clutch == false && (a.progress == null || a.progress.ended == false) && b.progress.rolls.size() == oldSize + 1 && b.clutchUsed == a.clutchUsed)
-      || (b.lastAction.clutch == true && oldSize > 0 && b.progress.rolls.size() == oldSize && a.clutchUsed[side] == false && b.clutchUsed[side] == true && b.clutchUsed[1-side] == a.clutchUsed[1-side]))
+     && ((b.lastAction.clutch == false && (a.progress == null || a.progress.ended == false) && b.progress.rolls.size() == oldSize + 1 && usedCount(b.clutchUsed[0]) == usedCount(a.clutchUsed[0]) && usedCount(b.clutchUsed[1]) == usedCount(a.clutchUsed[1]))
+      || (b.lastAction.clutch == true && oldSize > 0 && b.progress.rolls.size() == oldSize && usedCount(a.clutchUsed[side]) < 3 && usedCount(b.clutchUsed[side]) == usedCount(a.clutchUsed[side]) + 1 && usedCount(b.clutchUsed[1-side]) == usedCount(a.clutchUsed[1-side])))
      && getAfter(/databases/$(database)/documents/cardparkMatches/$(code)/events/$(b.lastAction.id)).data == b.lastAction;
    }
    function finishing() {

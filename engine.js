@@ -5,9 +5,13 @@ export const RULES = Object.freeze({
  '4-4':['BB','Walk'], '4-5':['PO','Pop out'], '4-6':['K','Strikeout'], '5-5':['2B','Double'], '5-6':['SF','Sacrifice fly'], '6-6':['HR','Home run']
 });
 export const clone = x => JSON.parse(JSON.stringify(x));
+export const powerLimit=s=>Math.max(1,Math.floor(Number(s.innings||3)/3));
+export const powerUsed=(s,type,team=s.half)=>{const n=s[type]?.[team];return n===true?1:Math.max(0,Number(n)||0);};
+export const powerRemaining=(s,type,team=s.half)=>Math.max(0,powerLimit(s)-powerUsed(s,type,team));
+function normalizePowers(s){for(const type of ['clutch','bunt'])s[type]=[0,1].map(team=>powerUsed(s,type,team));return s;}
 export function createState(innings=6) {
  if (![3,6,9].includes(Number(innings))) throw Error('Choose 3, 6, or 9 innings.');
- return {v:2, clutch:[false,false], bunt:[false,false], innings:Number(innings), inning:1, half:0, outs:0, bases:[null,null,null], next:[0,0], runs:[0,0], hits:[0,0], lines:[[0],[null]], stats:Array.from({length:2},()=>Array.from({length:4},()=>({ab:0,h:0,hr:0,r:0,rbi:0,bb:0,tb:0,doubles:0,triples:0,k:0,sf:0,sh:0}))), over:false,winner:null,plays:0};
+ return {v:2, clutch:[0,0], bunt:[0,0], innings:Number(innings), inning:1, half:0, outs:0, bases:[null,null,null], next:[0,0], runs:[0,0], hits:[0,0], lines:[[0],[null]], stats:Array.from({length:2},()=>Array.from({length:4},()=>({ab:0,h:0,hr:0,r:0,rbi:0,bb:0,tb:0,doubles:0,triples:0,k:0,sf:0,sh:0}))), over:false,winner:null,plays:0};
 }
 export function batter(s) {
  for(let n=0;n<4;n++) { const id=(s.next[s.half]+n)%4; if(!s.bases.includes(id)) return id; }
@@ -22,12 +26,12 @@ export function rollDice() {
 export function applyRoll(state,dice,mode='swing',historical=false) {
  if(state.over) throw Error('This game is final.');
  if(!['swing','bunt'].includes(mode))throw Error('Choose swing or bunt.');
- if(mode==='bunt'&&state.bunt?.[state.half]&&!historical)throw Error('Bunt has already been used this game.');
+ if(mode==='bunt'&&powerRemaining(state,'bunt')===0&&!historical)throw Error('No bunts remaining this game.');
  if(!Array.isArray(dice)||dice.length!==2||dice.some(x=>!Number.isInteger(x)||x<1||x>6)) throw Error('Invalid dice.');
  const s=clone(state), team=s.half, id=batter(s), key=[...dice].sort((a,b)=>a-b).join('-');let [code,label]=RULES[key];
  const sacrifice=mode==='bunt'&&state.outs<2&&state.bases.some(x=>x!==null);
  if(mode==='bunt'){code=(dice[0]+dice[1])%2===0?'BH':'BO';label=code==='BH'?'Bunt single':sacrifice?'Sacrifice bunt':'Bunt out';}
- s.clutch??=[false,false];s.bunt??=[false,false];if(mode==='bunt')s.bunt[team]=true;for(const roster of s.stats)for(const p of roster)for(const key of ['tb','doubles','triples','k','sf','sh'])p[key]??=0;
+ normalizePowers(s);if(mode==='bunt')s.bunt[team]++;for(const roster of s.stats)for(const p of roster)for(const key of ['tb','doubles','triples','k','sf','sh'])p[key]??=0;
  const moves=[], retired=[], oldRuns=s.runs[team];
  const move=(pid,from,to)=>{moves.push({id:pid,from,to}); if(to>=4){s.runs[team]++;s.lines[team][s.inning-1]=(s.lines[team][s.inning-1]||0)+1;s.stats[team][pid].r++;}};
  s.lines[team][s.inning-1]??=0;
@@ -64,20 +68,20 @@ export function applyRoll(state,dice,mode='swing',historical=false) {
  return {state:s,event:{dice:[...dice],mode,code,label,team,batter:id,moves,retired,runs:s.runs[team]-oldRuns,endTurn,outs:Math.min(3,state.outs+retired.length)}};
 }
 export function applyRecord(state,record){
- const before=clone(state);before.clutch??=[false,false];
- if(record.clutch){if(before.clutch[before.half])throw Error('Clutch batter has already been used.');before.clutch[before.half]=true;}
+ const before=normalizePowers(clone(state));
+ if(record.clutch){if(!powerRemaining(before,'clutch'))throw Error('No Clutch Batters remaining.');before.clutch[before.half]++;}
  const result=applyRoll(before,record.dice||record,record.mode||'swing',true);result.event.clutch=!!record.clutch;if(record.originalDice)result.event.originalDice=record.originalDice;
  return result;
 }
 export function replay(start,rolls){let state=clone(start);for(const r of rolls)state=applyRecord(state,r).state;return state;}
 export function playFromTurn(start,rolls,dice,clutch=false,mode='swing'){
  let next=clone(rolls),before;
- if(clutch){if(start.clutch?.[start.half]||next.some(r=>r.clutch))throw Error('Clutch Batter has already been used.');if(!next.length)throw Error('Roll first, then use Clutch Batter before your next roll.');const original=next.pop();before=replay(start,next);if(before.clutch?.[before.half])throw Error('Clutch Batter has already been used.');next.push({dice:[...dice],mode:original.mode||'swing',clutch:true,originalDice:original.originalDice||original.dice});}
- else {before=replay(start,next);if(mode==='bunt'&&before.bunt?.[before.half])throw Error('Bunt has already been used this game.');if(next.length){let b=clone(start),end=false;for(const r of next){const x=applyRecord(b,r);b=x.state;end=x.event.endTurn;}if(end)throw Error('End this half-inning first.');}next.push({dice:[...dice],mode});}
+ if(clutch){if(!next.length)throw Error('Roll first, then use Clutch Batter before your next roll.');if(next.at(-1).clutch)throw Error('You must keep a clutch reroll.');if(!powerRemaining(replay(start,next),'clutch',start.half))throw Error('No Clutch Batters remaining.');const original=next.pop();before=replay(start,next);next.push({dice:[...dice],mode:original.mode||'swing',clutch:true,originalDice:original.originalDice||original.dice});}
+ else {before=replay(start,next);if(mode==='bunt'&&!powerRemaining(before,'bunt'))throw Error('No bunts remaining this game.');if(next.length){let b=clone(start),end=false;for(const r of next){const x=applyRecord(b,r);b=x.state;end=x.event.endTurn;}if(end)throw Error('End this half-inning first.');}next.push({dice:[...dice],mode});}
  const result=applyRecord(before,next.at(-1));return {rolls:next,before,result};
 }
 export function situationOdds(state,mode='swing'){
- if(state.over||mode==='bunt'&&state.bunt?.[state.half])return null;let outs=0,onbase=0,runs=0,total=0;
+ if(state.over||mode==='bunt'&&!powerRemaining(state,'bunt'))return null;let outs=0,onbase=0,runs=0,total=0;
  for(let a=1;a<=6;a++)for(let b=1;b<=6;b++){const r=applyRoll(state,[a,b],mode);total++;if(r.event.retired.length)outs++;else onbase++;runs+=r.event.runs;}
  return {out:outs/total,onbase:onbase/total,runs:runs/total};
 }
