@@ -1,7 +1,7 @@
 import {makeSeason,recordLeagueResult} from './league.js';
 import {firebaseConfig} from './firebase-config.js';
 import {createState,clone,replay,applyRoll,playFromTurn} from './engine.js';
-let sdk, pending, auth, db;
+let sdk, pending, auth, db, creatingMatch;
 export let user=null;
 let callbacks=[];
 function decodeTurn(t){return t?{...t,start:JSON.parse(t.startJSON)}:null;}
@@ -35,15 +35,18 @@ export function friendly(e){const c=e?.code||'';if(c.includes('permission-denied
 function freshMatch(code,owner,team,innings,options={}){return {v:2,code,owner,players:[owner],teams:[clone(team),null],status:'waiting',turnUid:owner,seq:0,revision:0,clutchUsed:[false,false],stateJSON:JSON.stringify(createState(innings)),progress:null,lastAction:null,lastTurn:null,locked:!!options.pin,joinProof:'',leagueId:options.leagueId||'',fixtureId:options.fixtureId||'',createdAt:sdk.F.serverTimestamp(),updatedAt:sdk.F.serverTimestamp()};}
 async function pinHash(code,pin){if(!pin)return '';const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(code+':'+pin));return Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('');}
 function listing(m){return {code:m.code,owner:m.owner,name:m.teams[0].name,color:m.teams[0].color,innings:JSON.parse(m.stateJSON).innings,locked:m.locked,createdAt:sdk.F.serverTimestamp()};}
-export async function createMatch(team,innings,options={}){
- const {F}=await connect(),uid=requireUser();
+export function createMatch(team,innings,options={}){if(creatingMatch)return creatingMatch;creatingMatch=createFreshMatch(team,innings,options).finally(()=>{creatingMatch=null;});return creatingMatch;}
+async function createFreshMatch(team,innings,options={}){
+ const {F}=await connect(),uid=requireUser();await closeWaitingGames();if(user?.uid!==uid)throw Error('Your account changed. Try again.');
  for(let i=0;i<5;i++){const code=randomCode(),ref=F.doc(db,'cardparkMatches',code),proof=await pinHash(code,options.pin||''),m=freshMatch(code,uid,team,innings,options);
   const okay=await F.runTransaction(db,async tx=>{const s=await tx.get(ref);if(s.exists())return false;tx.set(ref,m);tx.set(F.doc(db,'cardparkLocks',code),{owner:uid,hash:proof});tx.set(F.doc(db,'cardparkOpenGames',code),listing(m));return true;});if(okay)return code;
  }throw Error('Could not create an invite. Please try again.');
 }
+export async function cancelWaiting(code){const {F}=await connect(),uid=requireUser();return F.runTransaction(db,async tx=>{const ref=F.doc(db,'cardparkMatches',code),snapshot=await tx.get(ref);if(!snapshot.exists())return false;const m=snapshot.data();if(m.status!=='waiting'||m.owner!==uid||m.players.length!==1||m.leagueId)return false;tx.update(ref,{status:'cancelled',turnUid:'',updatedAt:F.serverTimestamp()});tx.delete(F.doc(db,'cardparkOpenGames',code));return true;});}
+export async function closeWaitingGames(except=''){const uid=requireUser(),matches=await listMatches();let count=0;for(const m of matches){if(user?.uid!==uid)break;if(m.code!==except&&m.owner===uid&&m.status==='waiting'&&!m.leagueId&&await cancelWaiting(m.code))count++;}return count;}
 export async function joinMatch(code,team,pin=''){
  const {F}=await connect(),uid=requireUser();code=code.trim().toUpperCase();if(!/^[A-HJ-NP-Z2-9]{8}$/.test(code))throw Error('Enter the eight-character game ID.');const proof=await pinHash(code,pin.trim());
- await F.runTransaction(db,async tx=>{const ref=F.doc(db,'cardparkMatches',code),s=await tx.get(ref);if(!s.exists())throw Error('Game not found.');const m=s.data();if(m.players.includes(uid))return;if(m.status!=='waiting'||m.players.length!==1)throw Error('Someone already took the second seat.');tx.update(ref,{players:[m.owner,uid],teams:[m.teams[0],clone(team)],status:'active',joinProof:proof,updatedAt:F.serverTimestamp()});tx.delete(F.doc(db,'cardparkOpenGames',code));});return code;
+ await F.runTransaction(db,async tx=>{const ref=F.doc(db,'cardparkMatches',code),s=await tx.get(ref);if(!s.exists())throw Error('Game not found.');const m=s.data();if(m.status==='cancelled')throw Error('This waiting room is closed.');if(m.players.includes(uid))return;if(m.status!=='waiting'||m.players.length!==1)throw Error('Someone already took the second seat.');tx.update(ref,{players:[m.owner,uid],teams:[m.teams[0],clone(team)],status:'active',joinProof:proof,updatedAt:F.serverTimestamp()});tx.delete(F.doc(db,'cardparkOpenGames',code));});return code;
 }
 export async function watchList(next,error){const {F}=await connect(),uid=requireUser();return F.onSnapshot(F.query(F.collection(db,'cardparkMatches'),F.where('players','array-contains',uid)),s=>next(s.docs.map(d=>decodeMatch({...d.data(),code:d.id})).sort((a,b)=>(b.updatedAt?.toMillis?.()||0)-(a.updatedAt?.toMillis?.()||0))),error);}
 export async function watchOpenGames(next,error){const {F}=await connect();requireUser();return F.onSnapshot(F.query(F.collection(db,'cardparkOpenGames'),F.limit(60)),s=>next(s.docs.map(d=>({...d.data(),code:d.id}))),error);}

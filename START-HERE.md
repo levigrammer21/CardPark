@@ -1,33 +1,39 @@
-# Cardpark 2.1.2 — account persistence fix
+# Cardpark 2.2.0 — updated files
 
-Extract this ZIP and upload the files inside its single folder to your existing repository root, overwriting older copies. Keep files not included. Confirm **v2.1.2** after closing all Cardpark windows and reopening.
+Extract the ZIP and upload the files inside its one folder directly to your existing repository root, replacing older copies. Keep files not included. Close all Cardpark windows and reopen; confirm **v2.2.0** in the header.
 
-## Firebase rules changed — required
+## Firebase rules changed — publish these
 
-Open Firebase project `dice-baseball-f6a50` → **Firestore Database → Rules**. Replace the Cardpark rules with the included `firestore.rules` and click **Publish**. Uploading that file to GitHub does not publish it to Firebase. If this project serves unrelated apps, preserve their separate collection rules.
+In Firebase project `dice-baseball-f6a50`, open **Firestore Database → Rules**, paste the included `firestore.rules`, and **Publish**. Uploading the file to GitHub does not publish Firebase rules. Preserve unrelated app rules if this Firebase project hosts other applications.
 
-This adds private per-account backups of completed solo/local game stats under `cardparkUsers/{uid}/archives/{gameId}`. Only that signed-in user can read or write their backups. Existing match/league rules remain unchanged. No billing upgrade, notifications, Cloud Functions, or Storage setup is needed.
+The new rule lets a waiting room's owner cancel it only while it still has one player. Cancellation must also remove the public listing in the same transaction. Started matches, final scores, league fixtures, profile records, and stats backups retain their existing protections. No additional service or billing setup is needed.
 
-## Recover your existing browser data
+## Home
 
-1. Publish the rules and upload the updated files.
-2. Open the updated game once in the Google/Chrome browser where your profiles and stats are still present. Sign into your existing account if necessary. Leave it open online so its account sync completes. Account → **Sync account** can retry; a sync error is shown there if a request fails.
-3. Open the installed app and sign into **the same account** if its separate browser storage has never held that sign-in. The lineup, photos, and completed stats now load from Firebase automatically. Refreshing the app restores its saved session at startup.
+Home is now a compact club dashboard: your team name, your four actual cards/photos, team record, online play, solo, pass & play, leagues, stats, and game history. It no longer has the oversized title, opposing-team decorative card, or finished-game resume tile. Unfinished games still have Resume controls.
 
-Data previously stored only in a browser must be uploaded from that browser once. The app cannot directly read a different browser's private local storage. Do not clear either one's site data during migration. Do not create a new account to recover the old account's records.
+## Games no longer pile up
 
-## What changed
+- Leaving an empty waiting room through its Back button or navigating Home cancels it and removes its open seat.
+- Previously abandoned empty rooms are cleaned up when you next restore your account or open the Clubhouse. Creating a new room also closes older empty rooms, and repeated create taps share one request.
+- If an opponent joins first, cancellation leaves the started game intact.
+- **In progress** shows only started, unfinished online games. Finished games are under **Game history**, accessible from Home and the Clubhouse. Their recaps and stats remain saved.
+- If the OS kills the app before a cancellation can reach Firebase, cleanup occurs on the next account restore/Clubhouse visit. Failed cancellation requests report their error; the new rules must be published for cleanup to work.
 
-Firebase starts on app launch and restores authentication before offering sign-in or editing the lineup. Authentication uses durable IndexedDB persistence, with a localStorage fallback. The header shows “Restoring…” while checking, rather than presenting a false signed-out state.
+## Fielding rotation
 
-Saved lineup names, numbers, icons, and uploaded photos load automatically from the account. Editing a lineup saves it to the account for solo/local games too. Failed saves remain queued locally and retry on account sync/reconnection. A default install cannot overwrite a customized cloud lineup. A pre-existing device lineup is also retained as a recovery copy; Account offers **Recover previous lineup** if it differs from the restored one.
+All four cards rotate through pitcher (P), catcher (C), infield (IF), and outfield (OF) each inning. Each new defensive inning moves everyone to the next position; extra innings continue the cycle. Small position tags identify the assignments. Fielding animations follow the assigned player, and live views/replays calculate identical assignments from the inning. The stadium and field dimensions are unchanged.
 
-**My stats** and the Clubhouse Stats tab now show the account career: online games plus backed-up completed solo/local games. Online games remain in their original Firestore records. Existing browser-only final games are migrated by ID without duplicate counting. Confirmed final games only; solo/local records use the away team you control. New signed-in offline stats retain their history rather than trimming it to the old 35-game limit.
+## Current and historical stats
 
-Guest play still works locally. Unfinished offline games remain on the device where they were started. Keeping a login locally is necessary for authentication; your account profiles and synced stats are stored in Firestore.
+The default stats table always contains exactly your current four cards, in lineup order, including zero-stat cards. Former cards appear only after selecting **Historical stats**. Names plus jersey numbers identify a card's history; changing either moves its previous identity into historical stats, while changing only its photo does not. The team career record/averages still include all confirmed games.
 
-## Verification
+## Existing account data
 
-Checks cover automatic startup auth restoration, durable auth initialization, profile/photo restoration into empty app storage, browser-only migration, combined stats, duplicate-safe backups, queued failed-save recovery, account isolation, recovery from an older default-profile overwrite, and refresh reads using a Firebase mock. The existing live event, bunt, gameplay, and league checks pass.
+The account restoration and Firebase lineup/photo/stat backups from v2.1.2 remain in place. If older data still exists only in your Google/Chrome browser, open this updated version there once while signed into your existing account, then use the same account in the installed app. Do not clear site data during migration.
 
-Real installed-app/browser sessions and a Firestore rules emulator were not available in this environment. The included rules must be published before the new archive backup requests can succeed.
+## Validation
+
+Checks passed for owner-only/idempotent room cancellation, old-room cleanup, duplicate creation, preserving joined matches, active-only lists, separate game history, exactly four current stats rows, historical separation, zero-stat cards, four-position rotation, replay consistency, and the rotating fielder's actual animation path. Existing auth/account migration, live event, clutch, league scheduling, playoff, recap, and career checks also passed.
+
+Actual browser/device layout testing, two-account Firebase sessions, and a Firestore rules emulator were unavailable in this environment.

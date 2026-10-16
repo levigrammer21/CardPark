@@ -3,6 +3,7 @@ import {configureAudio,soundFX} from './audio.js';
 import {batter} from './engine.js';
 const POS={0:[50,88],1:[75,63],2:[50,39],3:[25,63],4:[50,88]};
 const DEF=[[50,60],[51,96],[73,43],[31,25]];
+export function defensiveLineup(state){const shift=Math.max(0,(state.inning||1)-1)%4;return DEF.map((position,slot)=>({id:(slot+shift)%4,slot,role:['P','C','IF','OF'][slot],position}));}
 const PIPS={1:[4],2:[0,8],3:[0,4,8],4:[0,2,6,8],5:[0,2,4,6,8],6:[0,2,3,5,6,8]};
 export const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function cardHTML(p,team){const photo=typeof p.photo==='string'&&/^data:image\/(jpeg|png|webp);base64,/.test(p.photo)?p.photo:'';const color=/^#[\da-f]{6}$/i.test(team.color)?team.color:'#34644b';return `<div class="card" style="--team:${color}"><div class="portrait">${photo?`<img src="${photo}" alt="" draggable="false">`:esc(p.icon||'⚾')}<span class="number">${esc(p.number)}</span></div><div class="player-name">${esc(p.name)}</div></div>`;}
@@ -17,7 +18,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,reduce()?Math.min(ms,60):ms/speed));
 export function paintField(el,s,teams){
  el.innerHTML=fieldSVG+`<div class="play-call" id="playCall"></div>`;
  const offense=s.half,defense=1-offense;
- DEF.forEach((pos,id)=>addToken(el,teams[defense].players[id],teams[defense],pos,`def-${id}`,''));
+ defensiveLineup(s).forEach(({position,id,role})=>{const token=addToken(el,teams[defense].players[id],teams[defense],position,`def-${id}`,'');token.dataset.position=role;token.setAttribute('aria-label',teams[defense].players[id].name+' · '+role);});
  s.bases.forEach((id,i)=>{if(id!==null)addToken(el,teams[offense].players[id],teams[offense],POS[i+1],`run-${id}`,'');});
  if(!s.over)addToken(el,teams[offense].players[batter(s)],teams[offense],POS[0],`run-${batter(s)}`,'batting');
 }
@@ -37,8 +38,8 @@ export async function animatePlay(el,before,result,teams){
  if(!['BB','K'].includes(e.code)){
   soundFX(e.mode==='bunt'?'bunt':'bat');
   const target=e.mode==='bunt'?[53,76]:['HR'].includes(e.code)?[60,-7]:['FO','PO','SF'].includes(e.code)?[31,25]:['GO','DP'].includes(e.code)?[73,43]:[20+(before.plays*17)%60,18];
-  const dest=e.mode==='bunt'?el.querySelector('[data-key="def-0"]'):['FO','PO','SF'].includes(e.code)?el.querySelector('[data-key="def-3"]'):el.querySelector('[data-key="def-2"]');
-  if(dest){dest.classList.add('fielding');travel(dest,[e.mode==='bunt'?DEF[0]:['FO','PO','SF'].includes(e.code)?DEF[3]:DEF[2],target],520);}
+  const slot=e.mode==='bunt'?0:['FO','PO','SF'].includes(e.code)?3:2,assignment=defensiveLineup(before)[slot],dest=el.querySelector(`[data-key="def-${assignment.id}"]`);
+  if(dest){dest.classList.add('fielding');travel(dest,[assignment.position,target],520);}
   await travel(ball,e.mode==='bunt'?[[50,88],[51,82],target]:[[50,88],[target[0],Math.max(2,target[1]-18)],target],e.mode==='bunt'?430:600);
  }else {soundFX('catch');await wait(130);}
  ball.remove();
