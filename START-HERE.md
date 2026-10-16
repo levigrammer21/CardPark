@@ -1,39 +1,33 @@
-# Cardpark 2.2.0 — updated files
+# Cardpark 2.3.0 — league bots
 
-Extract the ZIP and upload the files inside its one folder directly to your existing repository root, replacing older copies. Keep files not included. Close all Cardpark windows and reopen; confirm **v2.2.0** in the header.
+Extract the ZIP and upload the files inside its single folder directly into your existing repository root, replacing older copies. Keep files not included. Close all Cardpark windows and reopen; confirm **v2.3.0**.
 
-## Firebase rules changed — publish these
+## Firebase rules changed — required
 
-In Firebase project `dice-baseball-f6a50`, open **Firestore Database → Rules**, paste the included `firestore.rules`, and **Publish**. Uploading the file to GitHub does not publish Firebase rules. Preserve unrelated app rules if this Firebase project hosts other applications.
+In project `dice-baseball-f6a50`, open **Firestore Database → Rules**, paste the included `firestore.rules`, and **Publish**. Uploading this file to GitHub does not publish Firebase rules. Preserve unrelated application rules if this project serves other apps.
 
-The new rule lets a waiting room's owner cancel it only while it still has one player. Cancellation must also remove the public listing in the same transaction. Started matches, final scores, league fixtures, profile records, and stats backups retain their existing protections. No additional service or billing setup is needed.
+The rules now support commissioner-managed bot rosters, a human participant's client playing the opponent bot's turns, and league-member simulations of bot-versus-bot games with their saved turn history. Existing normal player-turn checks, join codes, profile backups, room cancellation, and personal archive rules remain in place.
 
-## Home
+## Build a mixed league
 
-Home is now a compact club dashboard: your team name, your four actual cards/photos, team record, online play, solo, pass & play, leagues, stats, and game history. It no longer has the oversized title, opposing-team decorative card, or finished-game resume tile. Unfinished games still have Resume controls.
+1. Create a league or open an existing league that has not started.
+2. Invite the people you want. The commissioner can use **Add bot** for one slot or **Fill with bots** for all remaining slots.
+3. An eight-team league can contain three people and five bots, one person and seven bots, or any other mix within the 3–12 total-team limit.
+4. Remove individual bots before starting if you want to free slots for more people. Only the commissioner can add/remove bots, and rosters lock when the season starts.
+5. Choose games per team and start. Odd total team counts still require an even number of games per team for equal schedules.
 
-## Games no longer pile up
+Bots have their own four-card rosters, colors, club names, and league identities. They do not need Firebase Auth accounts and do not occupy human membership slots outside the total team cap.
 
-- Leaving an empty waiting room through its Back button or navigating Home cancels it and removes its open seat.
-- Previously abandoned empty rooms are cleaned up when you next restore your account or open the Clubhouse. Creating a new room also closes older empty rooms, and repeated create taps share one request.
-- If an opponent joins first, cancellation leaves the started game intact.
-- **In progress** shows only started, unfinished online games. Finished games are under **Game history**, accessible from Home and the Clubhouse. Their recaps and stats remain saved.
-- If the OS kills the app before a cancellation can reach Firebase, cleanup occurs on the next account restore/Clubhouse visit. Failed cancellation requests report their error; the new rules must be published for cleanup to work.
+## Playing and advancing
 
-## Fielding rotation
+Human-versus-bot fixtures open like other league games. Your device automatically rolls and animates the bot's turns, with every roll saved individually. The bot can use its one bunt and one clutch reroll, following the same limits and dice probabilities as you. Human-versus-human fixtures retain the original asynchronous flow.
 
-All four cards rotate through pitcher (P), catcher (C), infield (IF), and outfield (OF) each inning. Each new defensive inning moves everyone to the next position; extra innings continue the cycle. Small position tags identify the assignments. Fielding animations follow the assigned player, and live views/replays calculate identical assignments from the inning. The stadium and field dimensions are unchanged.
+Bot-versus-bot fixtures simulate automatically while a league member has the league screen open. Each completed game saves its score, full effective turn history, recap/box-score data, and league result atomically. Open completed fixtures to review them. Bot wins can advance through every playoff round to a champion. Simulations resume when the league is opened again; they do not require a paid backend worker and do not run on a server while everybody is away. A failed simulation shows **Retry bot games**.
 
-## Current and historical stats
-
-The default stats table always contains exactly your current four cards, in lineup order, including zero-stat cards. Former cards appear only after selecting **Historical stats**. Names plus jersey numbers identify a card's history; changing either moves its previous identity into historical stats, while changing only its photo does not. The team career record/averages still include all confirmed games.
-
-## Existing account data
-
-The account restoration and Firebase lineup/photo/stat backups from v2.1.2 remain in place. If older data still exists only in your Google/Chrome browser, open this updated version there once while signed into your existing account, then use the same account in the installed app. Do not clear site data during migration.
+Two members opening the league at once cannot count the same result twice. Bot-versus-bot games do not enter a human's personal career stats. Your own human-versus-bot games count for your team normally.
 
 ## Validation
 
-Checks passed for owner-only/idempotent room cancellation, old-room cleanup, duplicate creation, preserving joined matches, active-only lists, separate game history, exactly four current stats rows, historical separation, zero-stat cards, four-position rotation, replay consistency, and the rotating fielder's actual animation path. Existing auth/account migration, live event, clutch, league scheduling, playoff, recap, and career checks also passed.
+Checks passed for a complete eight-team league with three humans and five bots, including additions/removal, slot capacity, ownership restrictions, live bot-controlled turns, bot-only simulations, saved replay fidelity, all regular-season/playoff results, and a final champion. Another 45 complete bot games across 3/6/9 innings passed replay-continuity and bunt/clutch-budget checks. Existing account persistence/migration, live events, room cleanup, UI, league schedule/playoff, and recap/career checks passed.
 
-Actual browser/device layout testing, two-account Firebase sessions, and a Firestore rules emulator were unavailable in this environment.
+Actual installed-app/browser layout testing, two-account Firebase sessions, and a Firestore rules emulator were unavailable in this environment. This remains a casual client-simulated game for friends; no new anti-cheat service was added.
